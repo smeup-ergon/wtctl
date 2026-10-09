@@ -165,7 +165,7 @@ wtctl uninstall --purge --yes   # explicitly remove manager-owned configuration 
 ```
 
 Remove startup integration before uninstalling. External binaries are never
-removed. The old `edge-net-devices` project is untouched.
+removed.
 
 ## Development
 
