@@ -158,14 +158,43 @@ The SysV adapter registers with `update-rc.d` if available; otherwise it prints
 that manual boot-hook registration is still required. Linux/BusyBox has no
 universal boot hook. See [installation and operation](docs/OPERATIONS.md).
 
-```sh
-wtctl startup remove openwrt --yes
-wtctl uninstall --yes           # preserve configuration and persistent binary
-wtctl uninstall --purge --yes   # explicitly remove manager-owned configuration too
-```
+## Uninstall
 
-Remove startup integration before uninstalling. External binaries are never
-removed.
+Run these commands **as root** on the device.
+
+1. **Remove startup integration first**, if you installed it. Choose only the
+   adapter you used; this stops the service and removes its startup registration:
+
+   ```sh
+   wtctl startup remove openwrt --yes
+   # On other systems, use one of these instead:
+   # wtctl startup remove systemd --yes
+   # wtctl startup remove sysv --yes
+   ```
+
+   If you never installed startup integration, skip this step. Remove any custom
+   boot hooks or manually registered SysV hooks yourself before continuing.
+
+2. **Choose one uninstall mode:**
+
+   Preserve configuration and any managed persistent binary for a later reinstall:
+
+   ```sh
+   wtctl uninstall --yes
+   ```
+
+   **Or**, to delete all manager-owned configuration, credentials and the managed
+   persistent binary too, use this **instead**. Back up `/etc/wtctl` first if needed;
+   deletion is irreversible:
+
+   ```sh
+   wtctl uninstall --purge --yes
+   ```
+
+Both modes stop owned tunnels/downloads, remove runtime state (including the RAM
+binary), and remove the installed `/usr/sbin/wtctl` script. External binaries are
+never removed. Neither mode removes curl/CA packages or changes network/firewall
+settings. Downloaded release directories are not removed automatically.
 
 ## Development
 
