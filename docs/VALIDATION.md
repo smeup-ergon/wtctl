@@ -1,6 +1,26 @@
 # Validation and release gates
 
-## 0.2.0 simplified lifecycle
+## Streamed single-command setup follow-up
+
+`curl .../scripts/install.sh | sh` is covered by a real controlling-terminal
+pipeline test from `/`, with the bootstrap GitHub responses mocked and binary
+transfers using the verified local HTTPS fixture. Coverage includes single-key
+approval/cancellation, storage/URL prompts through `/dev/tty`, automatic boot and
+service startup, unattended flags, pinned refs, truncated streams, failed/invalid
+manager downloads, staging cleanup and preservation of installed configurations
+and running clients on bootstrap failures.
+
+`make check`, the final `./tests/run.sh --all` (26 fixture groups plus 4 real
+traffic checks), `make openwrt-smoke`, and `git diff --check` passed.
+An earlier full run failed a pre-existing removal assertion based on `kill -0`;
+a 10-iteration isolated retry/removal probe and the subsequent full run did not
+reproduce it. The assertion now reports Linux process state on failure; no
+lifecycle fix or identified root cause is claimed. This remains an unresolved
+intermittent test signal, not proof of either a live orphan or a zombie. No
+physical follow-up was performed and no published-main bootstrap test was run.
+See [streamed setup evidence](evidence/streamed-setup-local.json).
+
+## 0.2.0 original simplified lifecycle
 
 This release changes the configuration schema and lifecycle. There are no existing
 installations to migrate. New coverage exercises implicit mutations/rollback,

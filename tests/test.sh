@@ -120,7 +120,10 @@ ok 'unreachable/failing client stays configured and retries'
 removed_pid=$(pid ru)
 "$W" tunnel remove ru
 [ ! -d /test/state/tunnels/ru ] && [ ! -e /test/config/tunnels/ru ] || fail 'remove not reconciled'
-! kill -0 "$removed_pid" 2>/dev/null || fail 'removed child still running'
+if kill -0 "$removed_pid" 2>/dev/null; then
+    removed_state=$(awk '{sub(/^.*\) /, ""); print $1}' "/proc/$removed_pid/stat" 2>/dev/null || :)
+    fail "removed child still running (process state: $removed_state)"
+fi
 ok 'remove is persistent stop, no disabled records retained'
 # A stale process token must never signal an unrelated process.
 sleep 120 & unrelated=$!

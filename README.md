@@ -11,12 +11,26 @@ See [validation](docs/VALIDATION.md) and [historical physical evidence](docs/PHY
 
 ## Setup and updates
 
-Copy the release directory to the device, then run as root:
+Run this single command **as root** in a terminal:
 
 ```sh
-sh scripts/install.sh --yes
-wtctl
+curl -fsSL https://raw.githubusercontent.com/smeup-ergon/wtctl/main/scripts/install.sh | sh
 ```
+
+The installer fetches the manager from the same repository, confirms setup with
+a numbered single-key prompt, and reads wizard input from `/dev/tty` (not the
+script pipe). It works from any directory; no checkout or archive is needed.
+Curl with HTTPS and CA trust must already be installed. Inspect/trust the source
+before running downloaded code as root. `main` follows the latest development
+code; for reproducible installs use a tag/commit for **both** downloads:
+
+```sh
+ref=YOUR_TAG_OR_COMMIT
+curl -fsSL "https://raw.githubusercontent.com/smeup-ergon/wtctl/$ref/scripts/install.sh" | sh -s -- --ref "$ref"
+```
+
+Or copy the release directory and run `sh scripts/install.sh --yes` locally.
+After setup, run `wtctl` for the menu.
 
 Setup asks for RAM/persistent storage and an approved **HTTPS URL serving a raw
 native wstunnel executable**, not an archive. It downloads and validates the
@@ -24,12 +38,19 @@ binary, automatically enables boot startup, and starts the service now. RAM is
 the default for unattended first setup. Existing settings and tunnels are
 preserved on reruns; blank URL input keeps the current source and binary.
 
-For unattended setup:
+For unattended setup, pass `--yes` and a binary URL (or reuse an existing one):
 
 ```sh
-sh scripts/install.sh --yes --storage ram \
-  --url 'https://downloads.example.com/wstunnel-mips-musl' --startup openwrt
+curl -fsSL https://raw.githubusercontent.com/smeup-ergon/wtctl/main/scripts/install.sh | \
+  sh -s -- --yes --storage ram \
+    --url 'https://downloads.example.com/wstunnel-mips-musl' --startup openwrt
 ```
+
+The same flags work with a local `sh scripts/install.sh`. Without a controlling
+terminal, setup requires `--yes` and any missing values supplied as flags.
+The complete installer is parsed before setup runs; interrupted/truncated streams
+cannot execute partially received setup steps. The manager download uses verified
+HTTPS-only redirects, size/time limits, marker and shell syntax validation.
 
 OpenWrt and running systemd are detected automatically, as is SysV with
 `update-rc.d`. Use `--startup systemd` or `--startup sysv` to select explicitly.
@@ -41,7 +62,8 @@ paths and installation at `/usr/sbin/wtctl`.
 **Update by rerunning the same script with `--url`:**
 
 ```sh
-sh scripts/install.sh --yes --url 'https://downloads.example.com/new-wstunnel'
+curl -fsSL https://raw.githubusercontent.com/smeup-ergon/wtctl/main/scripts/install.sh | \
+  sh -s -- --yes --url 'https://downloads.example.com/new-wstunnel'
 ```
 
 An explicitly supplied URL triggers replacement even if the URL is unchanged.

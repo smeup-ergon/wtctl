@@ -82,10 +82,19 @@ CA trust are prerequisites for HTTPS. No counters/history are written to flash.
 
 ## Setup/update safety and trust
 
-`scripts/install.sh` is the single setup/update entry point. It validates arguments
-and boot requirements, runs candidate manager code to configure the binary, then
-installs that script, ensures boot registration and transfers supervisor ownership
-to the service. Existing tunnels/settings are preserved. No URL means reuse;
+`scripts/install.sh` is the single setup/update entry point, including streamed
+`curl ... | sh` installation. The entire installer function is parsed before it
+runs; a same-line exit prevents the shell interpreting wizard input as commands
+after stdin is redirected to `/dev/tty`. Local releases use their adjacent manager;
+streamed/standalone installers fetch it from the fixed GitHub repository using
+verified HTTPS-only redirects and size/time bounds. --ref selects a tag/commit
+(or simple branch name), default main; pin both installer and manager for repeatability.
+Downloaded manager marker and shell syntax are checked before invocation. These
+checks are not authenticity guarantees: the repository/source must be trusted.
+Interactive setup without --yes obtains numbered confirmation; unattended setup
+requires explicit --yes. It validates arguments and boot requirements, runs candidate
+manager code to configure the binary, then installs that script, ensures boot
+registration and transfers supervisor ownership to the service. Existing tunnels/settings are preserved. No URL means reuse;
 explicit URL means download a replacement even if unchanged. RAM/persistent
 storage is selectable; external binaries are not an exposed mode.
 

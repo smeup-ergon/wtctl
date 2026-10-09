@@ -1,0 +1,32 @@
+{
+  "version": "0.2.0",
+  "candidate_sha256": "07b5619a6bfe485f31549000458f13f222bb67f50f4426acf1e0824f8510b863",
+  "installer_sha256": "744f35cccc973611369ff217cbf3c452c9c643bad2389f037b0ffe4b87235fda",
+  "checks": [
+    {"command": "make check", "result": "passed", "scope": "sh syntax, ShellCheck, 6 helper regressions and Python AST parsing"},
+    {"command": "./tests/run.sh --all", "result": "final run passed", "fixture_groups": 26, "real_traffic_checks": 4},
+    {"command": "make openwrt-smoke", "result": "passed", "scope": "unbooted OpenWrt x86-64 rootfs, not physical or booted procd acceptance"},
+    {"command": "git diff --check", "result": "passed"}
+  ],
+  "streamed_setup_coverage": [
+    "real curl-to-sh pipeline from arbitrary cwd with controlling PTY",
+    "wizard input reads /dev/tty rather than installer source pipe",
+    "single-key confirmation and cancellation without --yes",
+    "explicit --yes required without terminal",
+    "unattended setup/update flags and matching pinned manager ref",
+    "truncated source cannot execute partial installer actions",
+    "bootstrap HTTPS-only redirect/time/size options",
+    "download failure, missing manager marker and invalid shell syntax rejection",
+    "failed bootstrap retains installed script, settings and running supervisor",
+    "staging cleanup, boot registration, service startup and tunnel preservation"
+  ],
+  "bootstrap_network": "GitHub responses mocked; binary downloads use real curl and locally trusted HTTPS",
+  "published_main_bootstrap_tested": false,
+  "physical_testing_performed": false,
+  "residual_risks": [
+    "one earlier full run hit a pre-existing kill-0 removal assertion; ten isolated repetitions and final full suite did not reproduce it; process-state diagnostics added but cause remains unknown",
+    "downloaded installer/manager code is trusted administrator-selected root code, not authenticated by marker/syntax validation",
+    "main is mutable; pin both installer URL and --ref for reproducibility",
+    "physical setup/service ownership, power loss and WAN recovery still need device qualification"
+  ]
+}

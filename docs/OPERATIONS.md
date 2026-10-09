@@ -7,14 +7,24 @@
    the shell/applet baseline and mounted `/proc`; it never installs dependencies.
 3. Select a trusted raw executable matching CPU, endianness, ISA and ABI/libc.
    A matching ELF header does not establish complete compatibility.
-4. Copy the release directory through an authenticated administrator channel.
-   Run `sh scripts/install.sh --yes` as root; numbered setup selects RAM or
-   persistent storage and accepts the approved HTTPS raw-executable URL.
-   Unattended equivalent:
+4. As root, run the one-command setup (trust/inspect the downloaded code first):
 
    ```sh
-   sh scripts/install.sh --yes --storage ram --url 'https://HOST/RAW_BINARY' --startup openwrt
+   curl -fsSL https://raw.githubusercontent.com/smeup-ergon/wtctl/main/scripts/install.sh | sh
    ```
+
+   It fetches the manager, reads confirmation and the numbered storage/URL wizard
+   from `/dev/tty`, enables boot startup and starts the service. No checkout is
+   needed. Main is development code; pin both URLs to a tag/commit with --ref
+   as described in the README for reproducibility. Without a controlling terminal:
+
+   ```sh
+   curl -fsSL https://raw.githubusercontent.com/smeup-ergon/wtctl/main/scripts/install.sh | \
+     sh -s -- --yes --storage ram --url 'https://HOST/RAW_BINARY' --startup openwrt
+   ```
+
+   Alternatively, copy the release through an authenticated channel and run
+   `sh scripts/install.sh --yes`; the same configuration flags are available.
 
 5. Setup downloads/validates, enables boot startup and starts the service. It
    detects OpenWrt, running systemd or SysV with update-rc.d. Choose an adapter
@@ -38,7 +48,8 @@ Storage selection preserves the current mode if omitted unattended. Existing
 server/tunnel records remain intact. Candidate validation runs as root.
 
 ```sh
-sh scripts/install.sh --yes --url 'https://HOST/NEW_RAW_BINARY'
+curl -fsSL https://raw.githubusercontent.com/smeup-ergon/wtctl/main/scripts/install.sh | \
+  sh -s -- --yes --url 'https://HOST/NEW_RAW_BINARY'
 ```
 
 Downloads leave working clients undisturbed. Activation briefly pauses them and
