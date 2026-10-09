@@ -149,7 +149,18 @@ and jitter. RAM mode needs working networking, CA trust and a correct TLS clock.
 Persistent mode reuses its existing compatible binary.
 
 `wtctl status` reports supervisor/binary phase, child PID, exit, restart count
-and retry epoch. No tunnel logs or traffic-health claims. `daemon` and
+and retry epoch, plus each tunnel's applied server, direction/protocol and
+endpoints. `wtctl tunnel list` shows the same details from saved configuration:
+
+```text
+printer server=office reverse/tcp listen=127.0.0.1:9100 target=192.168.1.50:9100
+```
+
+`listen=` includes bind address and listen port; `target=` includes target host
+and port. IPv6 addresses are bracketed, e.g. `listen=[::1]:9100`. The listener
+is local for forward tunnels and on the server for reverse tunnels. These are
+configuration settings, not verified sockets or resolved IP addresses.
+No tunnel logs or traffic-health claims. `daemon` and
 `shutdown` remain service plumbing, not tunnel controls. Stop the owning service
 (`/etc/init.d/wtctl stop` or `systemctl stop wtctl`) for maintenance; an active
 init watchdog can undo a direct shutdown.

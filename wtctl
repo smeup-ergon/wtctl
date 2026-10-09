@@ -618,11 +618,21 @@ setup_binary() {
     [ "$setup_old_binary" = "$tx_binary" ] || rm -f "$setup_old_binary"
     printf 'Binary ready; setup configuration saved.\n'
 }
+tunnel_details() (
+    # Read only tunnel settings; never include server credentials.
+    file=$1
+    bind=$(get "$file" bind); target=$(get "$file" target)
+    case "$bind" in *:*) bind="[$bind]";; esac
+    case "$target" in \[*\]) ;; *:*) target="[$target]";; esac
+    printf 'server=%s %s/%s listen=%s:%s target=%s:%s' \
+        "$(get "$file" server)" "$(get "$file" direction)" "$(get "$file" protocol)" \
+        "$bind" "$(get "$file" listen)" "$target" "$(get "$file" port)"
+)
 status() {
     daemon_state=stopped; owned_alive "$STATE/daemon" && daemon_state=running
     printf 'Supervisor: %s\nBinary: %s\n' "$daemon_state" "$(head -n 1 "$STATE/binary-status" 2>/dev/null || printf unconfigured)"
     printf 'Download retry epoch: %s\n' "$(head -n 1 "$STATE/next-download" 2>/dev/null || printf 0)"
-    printf '%-20s %-12s %-8s %-6s %-8s %s\n' TUNNEL STATE PID EXIT RESTARTS NEXT_RETRY
+    printf '%-20s %-12s %-8s %-6s %-8s %-10s %s\n' TUNNEL STATE PID EXIT RESTARTS NEXT_RETRY DETAILS
     active=$(current)
     [ -d "$active" ] || active=$CONFIG/no-active-snapshot
     set +f
@@ -632,7 +642,7 @@ status() {
         state=$(get "$work/status" state); [ -n "$state" ] || state=stopped
         pid=$(get "$work/status" pid)
         if [ "$state" = running ] && ! owned_alive "$work/child"; then state=stopped; pid=; fi
-        printf '%-20s %-12s %-8s %-6s %-8s %s\n' "$name" "$state" "$pid" "$(get "$work/status" exit)" "$(get "$work/status" restarts)" "$(get "$work/status" next_retry)"
+        printf '%-20s %-12s %-8s %-6s %-8s %-10s %s\n' "$name" "$state" "$pid" "$(get "$work/status" exit)" "$(get "$work/status" restarts)" "$(get "$work/status" next_retry)" "$(tunnel_details "$tunnel_dir/tunnel")"
     done
     set -f
     printf 'Process state only; connectivity is not verified.\n'
@@ -642,7 +652,7 @@ list_records() {
     for file in "$CONFIG/$1"/*; do
         [ -f "$file" ] || continue
         if [ "$1" = servers ]; then printf '%s auth=%s\n' "${file##*/}" "$(get "$file" auth)"
-        else printf '%s server=%s %s/%s\n' "${file##*/}" "$(get "$file" server)" "$(get "$file" direction)" "$(get "$file" protocol)"; fi
+        else printf '%s %s\n' "${file##*/}" "$(tunnel_details "$file")"; fi
     done
     set -f
 }

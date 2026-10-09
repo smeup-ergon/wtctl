@@ -66,7 +66,13 @@ rather than assuming successful setup from partial output.
   registration. Unmanaged paths are not executed; missing query tools or
   inaccessible data report unknown. Boot registration is not traffic health.
 - `wtctl status`: supervisor/binary phase, child state/PID, last exit, restart
-  count and retry epoch. Counters are per-worker lifetime, not persistent history.
+  count and retry epoch, plus applied server, direction/protocol and
+  `listen=<bind>:<port> target=<host>:<port>` endpoints (IPv6 bracketed).
+  Counters are per-worker lifetime, not persistent history. Endpoints are
+  configuration, not verified sockets; forward listeners are local and reverse
+  listeners are on the server.
+- `wtctl tunnel list`: the same tunnel details from saved configuration rather
+  than the applied snapshot; no runtime state or credentials.
 - Missing RAM binaries retry while at least one tunnel exists. Downloads use
   verified HTTPS-only redirects and bounded exponential backoff indefinitely.
 - `download-failed`: check WAN, DNS, source URL, clock, CA trust and space.

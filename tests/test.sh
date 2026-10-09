@@ -96,6 +96,35 @@ grep -q '^CA=/test/password$' "/test/captures/$fu_pid" || fail 'custom CA'
 ! grep -q secret /test/status || fail 'status leaks secrets'
 ! find /test/state -name '*.log' | grep -q . || fail 'unexpected logs'
 ok 'safe tunnel argv, credentials, custom CA and log-free status'
+"$W" tunnel list > /test/tunnel-list
+for spec in ft:forward:tcp:19001:main fu:forward:udp:19002:path rt:reverse:tcp:19003:main ru:reverse:udp:19004:path; do
+    IFS=: read -r name direction protocol listen server <<EOF
+$spec
+EOF
+    details="server=$server $direction/$protocol listen=127.0.0.1:$listen target=127.0.0.1:80"
+    grep -Fqx "$name $details" /test/tunnel-list || fail 'tunnel list missing endpoints'
+    awk -v name="$name" '$1==name' /test/status | grep -Fq "$details" || fail 'status missing endpoints'
+done
+! grep -q secret /test/tunnel-list || fail 'tunnel list leaks secrets'
+"$W" tunnel add ipv6 --server main --bind ::1 --listen 19005 --target '[::1]' --port 8080
+wait_running ipv6
+"$W" tunnel list > /test/tunnel-list
+"$W" status > /test/status
+details='server=main forward/tcp listen=[::1]:19005 target=[::1]:8080'
+grep -Fqx "ipv6 $details" /test/tunnel-list || fail 'IPv6 list formatting'
+awk '$1=="ipv6"' /test/status | grep -Fq "$details" || fail 'IPv6 status formatting'
+"$W" tunnel remove ipv6
+# Deliberately diverge a saved fixture without publishing it: status must use
+# the applied snapshot, while list must show the saved record. Restore at once.
+cp /test/config/tunnels/ft /test/ft.saved
+awk '/^port=/ {$0="port=82"} {print}' /test/ft.saved > /test/config/tunnels/ft
+"$W" tunnel list > /test/tunnel-list
+"$W" status > /test/status
+cp /test/ft.saved /test/config/tunnels/ft
+awk '$1=="ft"' /test/tunnel-list | grep -Fq 'target=127.0.0.1:82' || fail 'list not using saved settings'
+awk '$1=="ft"' /test/status | grep -Fq 'target=127.0.0.1:80' || fail 'status not using applied settings'
+grep -Fqx 'Process state only; connectivity is not verified.' /test/status || fail 'status disclaimer missing'
+ok 'endpoint details for all modes, IPv6 and saved versus applied settings'
 "$W" tunnel edit ft --port 81
 wait_running ft
 [ "$(pid ft)" != "$ft_pid" ] && [ "$(pid fu)" = "$fu_pid" ] && [ "$(pid rt)" = "$rt_pid" ] || fail 'implicit affected-only edit'
