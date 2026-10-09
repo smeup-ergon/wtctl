@@ -48,9 +48,25 @@ wtctl doctor
 wtctl                 # interactive setup menu on a terminal
 ```
 
-Installation puts the single script at `/usr/sbin/wtctl`. It does not register
-startup, download binaries, modify firmware/feeds, or start tunnels. No build is
-needed. You can also execute `./wtctl` directly as root for development.
+Installation puts the single script at `/usr/sbin/wtctl`. On an interactive
+terminal it asks whether to enable boot autostart, defaulting to **No**. It detects
+OpenWrt, running systemd, or conventional SysV registration; if detection is
+inconclusive, accepting the prompt asks you to choose an adapter. Accepting
+installs the adapter or re-enables an existing managed adapter without overwriting
+it. Declining leaves any existing boot preference unchanged.
+
+For unattended installation, choose explicitly:
+
+```sh
+sh scripts/install.sh --yes --startup openwrt   # opt in; systemd/sysv also supported
+sh scripts/install.sh --yes --no-startup       # leave boot integration unchanged
+```
+
+Without a terminal or `--startup`, no boot changes are made. Registration does
+not start the service now; SysV systems without `update-rc.d` still need manual
+boot-hook registration. Installation does not download binaries or change
+firmware/feeds. No build is needed. You can also execute `./wtctl` directly as root
+for development.
 
 ### Command-first setup
 
@@ -144,19 +160,32 @@ existing compatible binary on startup.
 
 ## Boot integration
 
-Choose explicitly after applying a working configuration:
+If you skipped the installer prompt, enable startup later, preferably after
+applying a working configuration:
 
 ```sh
-wtctl startup install openwrt --yes
+wtctl startup enable openwrt --yes
 # Alternatives: systemd or sysv
+wtctl doctor
 ```
+
+`startup enable` installs a missing adapter or re-enables an existing matching
+managed adapter without rewriting it. `startup install` remains available for
+first-time registration and refuses an existing startup file.
 
 Adapters require installation at `/usr/sbin/wtctl` and default config/state paths.
 Installation enables future boot startup; it does not start the service now.
 OpenWrt procd/systemd supervise only the portable manager, not each tunnel.
 The SysV adapter registers with `update-rc.d` if available; otherwise it prints
 that manual boot-hook registration is still required. Linux/BusyBox has no
-universal boot hook. See [installation and operation](docs/OPERATIONS.md).
+universal boot hook. `wtctl doctor` reports boot integration separately from
+current supervisor state: OpenWrt enabled/disabled, systemd's registration state,
+or detected SysV start links. Missing query tools or insufficient permissions
+report **unknown**, not enabled. Unmanaged files/symlinks are reported but never
+executed; custom boot hooks cannot be reliably detected. OpenWrt/SysV link
+inspection optionally uses `readlink`; its absence does not fail other doctor
+checks. Use `wtctl status` for current process state. See
+[installation and operation](docs/OPERATIONS.md).
 
 ## Uninstall
 

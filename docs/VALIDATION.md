@@ -11,7 +11,7 @@ repository files were not changed.
 | `make check` | Passed | POSIX-sh syntax and ShellCheck; Python syntax, 4 restoration regressions and 2 UDP-result/exit regressions |
 | `make test` | 38 grouped checks passed | Alpine 3.20 BusyBox shell, compiled ELF fixture, real curl against locally trusted HTTPS |
 | `make integration` | 4 traffic checks passed | Real upstream wstunnel v11.0.0 linux/amd64, verified WSS and custom CA/path auth, forward/reverse TCP/UDP echoed payloads |
-| `make openwrt-smoke` | Passed | OpenWrt 22.03.4 x86-64 container: applet capabilities, config/apply, idle supervisor/start/stop |
+| `make openwrt-smoke` | Passed | OpenWrt 22.03.4 x86-64: applets/config/idle supervisor and actual rc.common registration/doctor checks |
 | `make dist` | Passed | Rebuilt after shutdown fix and final evidence; source/archive/deployed manager SHA256 match |
 
 Final follow-up reran `make check`, `./tests/run.sh --all` (38 lifecycle checks
@@ -31,7 +31,10 @@ simulated WAN restoration, HTTPS downgrade rejection, invalid ELF rejection,
 persistent binary storage, no-rollback behavior, uninstall/purge, pseudo-terminal
 menu/hidden-input/removal checks, and startup adapter/installer generation.
 
-Startup adapter tests use **shims**, not real procd/systemd service ownership.
+Startup lifecycle tests use **shims**, not real procd/systemd service ownership.
+The OpenWrt rootfs additionally exercises actual rc.common enable/disable and
+boot links, proving doctor does not acquire/create the procd lock while querying
+registration. It does not boot procd or qualify real service supervision.
 The OpenWrt rootfs lacks `od` and `stty`; the manager uses `hexdump` instead, and
 secret-input menus can use a private password file. Downloads remain an optional
 curl/CA capability. The rootfs smoke does not test downloads or native MIPS ABI.
@@ -41,6 +44,27 @@ separate test server; server mode is not a wtctl feature. Lifecycle tests do not
 prove upstream behavior; the traffic smoke supplements them but is still a
 container test. Container/emulated x86_64 success says nothing about MIPS float
 ABI, actual RAM usage or performance on constrained hardware.
+
+## Installer/autostart and doctor follow-up
+
+The new installer prompt and boot diagnostics were tested locally after the
+recorded physical campaign. `make check`, `./tests/run.sh --all` (38 grouped
+lifecycle checks and 4 real traffic checks), and `make openwrt-smoke` passed.
+Evidence/candidate hash: [boot integration local results](evidence/boot-integration-local.json).
+
+The final lifecycle group now includes a real-PTY installer test for default-No,
+explicit consent, re-enabling an existing disabled adapter without rewriting it,
+and declining without changing an existing enabled preference. Unattended
+`--startup`, `--no-startup`, repeated installation and invalid-option rejection
+are covered. Doctor tests cover absent/enabled/disabled/masked/unknown/unmanaged
+registration, read-only/non-root OpenWrt inspection, inaccessible registration
+directories, unavailable query tools, and SysV start links. The real OpenWrt
+rootfs exercises installer opt-in and disabled/re-enabled registration with
+actual rc.common, without invoking a booted procd service.
+
+The physical reports below apply to the earlier recorded runtime SHA256; these
+installer/doctor additions have **not** been deployed or requalified on the
+physical device. Historical physical evidence is unchanged.
 
 ## Owner-approved physical testing
 

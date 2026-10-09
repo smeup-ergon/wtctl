@@ -3,8 +3,9 @@
 ## Boundaries
 
 `wtctl` is one POSIX-shell executable. Linux `/proc` supplies process identity;
-no UCI, ubus, rpcd or init-system APIs are used by the core. Startup adapters are
-optional. The manager owns only client processes it launches. It never changes
+no UCI, ubus or rpcd APIs are used by the core. The portable supervisor is
+independent of init-system APIs. Optional startup management and boot diagnostics
+use platform capabilities separately. The manager owns only client processes it launches. It never changes
 firewall, network interfaces, WAN listeners, firmware, vendor feeds, or the old
 project. Root is required for all operational commands; help/version/doctor are
 read-only and do not require root.
@@ -98,6 +99,26 @@ managed executable, download, validate, activate. Space is preflighted before
 deleting; no rollback binary exists. Download failure means downtime, with
 indefinite capped retries. Externally supplied binaries live outside manager-owned
 roots and are never updated or deleted.
+
+## Installation and boot diagnostics
+
+The local installer requires `--yes` for installation approval. On a terminal it
+separately offers boot autostart, defaulting to No; unattended installs preserve
+boot preferences unless `--startup ADAPTER` is supplied. `--no-startup` suppresses
+the prompt and does not disable existing registration. Boot enablement does not
+start the service immediately. `startup enable` installs missing adapters or
+re-enables matching managed adapters without rewriting them; `startup install`
+still refuses existing files. Unrelated files/symlinks cannot be enabled.
+
+`doctor` remains non-root-capable and does not prepare configuration/runtime
+state. Boot checks do not execute init scripts: OpenWrt priorities and owned
+start/stop links are inspected directly (rc.common status queries may take procd
+locks). SysV inspection finds conventional start links; arbitrary custom hooks
+and actual runlevel selection cannot be inferred. `readlink` is an optional
+inspection utility, not a supervisor dependency. systemd uses read-only
+`systemctl is-enabled`. Missing tools, unrecognized query responses and
+insufficient permissions produce unknown state rather than an enabled claim.
+Registration is distinct from current supervisor/process health.
 
 ## Deliberate exclusions
 

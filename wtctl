@@ -625,6 +625,96 @@ list_records() {
     done
     set -f
 }
+boot_report() {
+    boot_found=0
+    boot_target=/etc/init.d/wtctl
+    if [ -e "$boot_target" ] || [ -L "$boot_target" ]; then
+        boot_found=1
+        if [ -L "$boot_target" ]; then
+            printf 'Boot integration: init script — unmanaged symlink (not inspected)\n'
+        elif [ ! -f "$boot_target" ]; then
+            printf 'Boot integration: init script — unmanaged non-regular path (not inspected)\n'
+        elif [ ! -r "$boot_target" ]; then
+            printf 'Boot integration: init script — unknown (not readable)\n'
+        elif ! grep -q '^# Managed by wtctl$' "$boot_target"; then
+            printf 'Boot integration: init script — unmanaged (left untouched)\n'
+        elif grep -q '^USE_PROCD=1$' "$boot_target"; then
+            # rc.common loads procd.sh and may lock even for "enabled". Never
+            # execute the adapter: inspect its priorities and owned boot links.
+            boot_start=$(get "$boot_target" START); boot_stop=$(get "$boot_target" STOP)
+            boot_state='unknown (unrecognized boot priorities)'
+            case "$boot_start:$boot_stop" in
+                :*|*:|*[!0-9:]*) ;;
+                *)
+                    if [ -d /etc/rc.d ] && { [ ! -r /etc/rc.d ] || [ ! -x /etc/rc.d ]; }; then
+                        boot_state='unknown (registration directory not accessible)'
+                    elif ! command -v readlink >/dev/null 2>&1; then
+                        boot_state='unknown (readlink unavailable)'
+                    else
+                        boot_real=$(readlink -f "$boot_target" 2>/dev/null) || boot_real=
+                        boot_state=disabled
+                        [ -n "$boot_real" ] || boot_state='unknown (cannot resolve startup path)'
+                        if [ -n "$boot_real" ] && [ -L "/etc/rc.d/S${boot_start}wtctl" ] && [ -L "/etc/rc.d/K${boot_stop}wtctl" ] &&
+                            [ "$(readlink -f "/etc/rc.d/S${boot_start}wtctl" 2>/dev/null)" = "$boot_real" ] &&
+                            [ "$(readlink -f "/etc/rc.d/K${boot_stop}wtctl" 2>/dev/null)" = "$boot_real" ]; then boot_state=enabled; fi
+                    fi;;
+            esac
+            printf 'Boot integration: openwrt — %s\n' "$boot_state"
+        elif grep -q '^# Default-Start: 2 3 4 5$' "$boot_target"; then
+            if command -v readlink >/dev/null 2>&1; then
+                boot_real=$(readlink -f "$boot_target" 2>/dev/null) || boot_real=
+                boot_registered=0; boot_accessible=1
+                set +f
+                for boot_directory in /etc/rc[12345S].d /etc/rc.d/rc[12345S].d; do
+                    [ -d "$boot_directory" ] || continue
+                    if [ ! -r "$boot_directory" ] || [ ! -x "$boot_directory" ]; then boot_accessible=0; continue; fi
+                    for boot_link in "$boot_directory"/S*wtctl; do
+                        [ -L "$boot_link" ] || continue
+                        [ -z "$boot_real" ] || [ "$(readlink -f "$boot_link" 2>/dev/null)" != "$boot_real" ] || boot_registered=1
+                    done
+                done
+                set -f
+                if [ -z "$boot_real" ]; then
+                    printf 'Boot integration: sysv — unknown (cannot resolve startup path)\n'
+                elif [ "$boot_registered" = 1 ]; then
+                    printf 'Boot integration: sysv — registered (start links found)\n'
+                elif [ "$boot_accessible" = 0 ]; then
+                    printf 'Boot integration: sysv — unknown (registration directory not accessible)\n'
+                else
+                    printf 'Boot integration: sysv — not registered (manual boot hooks may exist)\n'
+                fi
+            else
+                printf 'Boot integration: sysv — unknown (readlink unavailable)\n'
+            fi
+        else
+            printf 'Boot integration: init script — unknown (unrecognized managed adapter)\n'
+        fi
+    fi
+    boot_target=/etc/systemd/system/wtctl.service
+    if [ -e "$boot_target" ] || [ -L "$boot_target" ]; then
+        boot_found=1
+        if [ -L "$boot_target" ]; then
+            printf 'Boot integration: systemd — unmanaged symlink (not inspected)\n'
+        elif [ ! -f "$boot_target" ]; then
+            printf 'Boot integration: systemd — unmanaged non-regular path (not inspected)\n'
+        elif [ ! -r "$boot_target" ]; then
+            printf 'Boot integration: systemd — unknown (not readable)\n'
+        elif ! grep -q '^# Managed by wtctl$' "$boot_target"; then
+            printf 'Boot integration: systemd — unmanaged (left untouched)\n'
+        elif command -v systemctl >/dev/null 2>&1; then
+            boot_state=$(systemctl is-enabled wtctl.service 2>/dev/null) || :
+            case "$boot_state" in
+                enabled|enabled-runtime|disabled|masked|masked-runtime|static|indirect|alias|linked|linked-runtime|generated|transient) ;;
+                *) boot_state='unknown (systemctl query failed)';;
+            esac
+            printf 'Boot integration: systemd — %s\n' "$boot_state"
+        else
+            printf 'Boot integration: systemd — unknown (systemctl unavailable)\n'
+        fi
+    fi
+    [ "$boot_found" != 0 ] || printf 'Boot integration: not installed\n'
+    printf 'Boot registration is separate from current supervisor state; use wtctl status.\n'
+}
 doctor() {
     printf 'wtctl %s; Linux architecture: %s\n' "$VERSION" "$(uname -m)"
     distro=linux; [ ! -f /etc/openwrt_release ] || distro=openwrt
@@ -643,6 +733,7 @@ doctor() {
     fi
     command -v stty >/dev/null 2>&1 || printf 'Optional secret-entry capability missing: stty\n'
     [ -d /proc/self ] || { printf 'Missing: mounted Linux /proc\n'; missing=1; }
+    boot_report
     return "$missing"
 }
 ask() { printf '%s' "$1"; IFS= read -r answer || return 1; }
@@ -711,11 +802,38 @@ menu() {
         esac
     done
 }
+register_startup() {
+    case "$1" in
+        openwrt) "$2" enable || fail 'Could not enable procd startup';;
+        systemd) systemctl daemon-reload; systemctl enable wtctl || fail 'Could not enable service';;
+        sysv)
+            if command -v update-rc.d >/dev/null 2>&1; then update-rc.d wtctl defaults || fail 'Could not register startup'
+            else printf 'Hook installed. Register it using your init system; no universal BusyBox boot hook exists.\n'; fi;;
+    esac
+}
 startup() {
     action=$1; adapter=$2; approval=${3:-}
     [ "$approval" = --yes ] || fail 'Startup changes require --yes'
     [ "$CONFIG" = /etc/wtctl ] && [ "$STATE" = /tmp/wtctl ] || fail 'Startup adapters require default paths'
     [ "$SELF" = /usr/sbin/wtctl ] || fail 'Install the script at /usr/sbin/wtctl first'
+    if [ "$action" = enable ]; then
+        case "$adapter" in
+            openwrt|sysv) target=/etc/init.d/wtctl;;
+            systemd) target=/etc/systemd/system/wtctl.service;;
+            *) fail 'Choose openwrt, systemd or sysv';;
+        esac
+        if [ -e "$target" ] || [ -L "$target" ]; then
+            [ ! -L "$target" ] && [ -f "$target" ] && grep -q '^# Managed by wtctl$' "$target" || fail 'Not a managed startup file'
+            case "$adapter" in
+                openwrt) [ -f /etc/rc.common ] && [ -f /etc/openwrt_release ] && grep -q '^USE_PROCD=1$' "$target" || fail 'Not an OpenWrt startup adapter';;
+                systemd) command -v systemctl >/dev/null 2>&1 && grep -q '^ExecStart=/usr/sbin/wtctl daemon$' "$target" || fail 'Not an available systemd startup adapter';;
+                sysv) grep -q '^# Default-Start: 2 3 4 5$' "$target" || fail 'Not a SysV startup adapter';;
+            esac
+            register_startup "$adapter" "$target"
+            return
+        fi
+        action=install
+    fi
     case "$adapter" in
         openwrt)
             target=/etc/init.d/wtctl
@@ -724,7 +842,7 @@ startup() {
                 [ ! -e "$target" ] || fail 'Startup file already exists'
                 { printf '#!/bin/sh /etc/rc.common\n# Managed by wtctl\nUSE_PROCD=1\nSTART=99\nSTOP=15\n';
                   printf 'start_service() {\n procd_open_instance\n procd_set_param command /usr/sbin/wtctl daemon\n procd_set_param respawn 3600 5 0\n procd_set_param term_timeout 30\n procd_set_param stdout 0\n procd_set_param stderr 0\n procd_close_instance\n}\n'; } > "$target"
-                chmod 755 "$target"; "$target" enable || fail 'Could not enable procd startup'
+                chmod 755 "$target"; register_startup "$adapter" "$target"
             else
                 grep -q '^# Managed by wtctl$' "$target" || fail 'Not a managed startup file'
                 "$target" stop; "$target" disable; rm -f "$target"
@@ -735,7 +853,7 @@ startup() {
             if [ "$action" = install ]; then
                 [ ! -e "$target" ] || fail 'Startup file already exists'
                 printf '# Managed by wtctl\n[Unit]\nDescription=wstunnel manager\nAfter=network.target\n[Service]\nExecStart=/usr/sbin/wtctl daemon\nRestart=always\nRestartSec=5\nTimeoutStopSec=30\nKillMode=control-group\n[Install]\nWantedBy=multi-user.target\n' > "$target"
-                systemctl daemon-reload; systemctl enable wtctl || fail 'Could not enable service'
+                register_startup "$adapter" "$target"
             else
                 grep -q '^# Managed by wtctl$' "$target" || fail 'Not a managed startup file'
                 systemctl disable --now wtctl; rm -f "$target"; systemctl daemon-reload
@@ -747,7 +865,7 @@ startup() {
                 [ ! -e "$target" ] || fail 'Startup file already exists'
                 printf '#!/bin/sh\n# Managed by wtctl\n### BEGIN INIT INFO\n# Provides: wtctl\n# Required-Start: $network\n# Required-Stop: $network\n# Default-Start: 2 3 4 5\n# Default-Stop: 0 1 6\n### END INIT INFO\ncase "$1" in start) /usr/sbin/wtctl daemon --background;; stop) /usr/sbin/wtctl shutdown;; restart) /usr/sbin/wtctl shutdown; /usr/sbin/wtctl daemon --background;; *) exit 1;; esac\n' > "$target"
                 chmod 755 "$target"
-                if command -v update-rc.d >/dev/null 2>&1; then update-rc.d wtctl defaults || fail 'Could not register startup'; else printf 'Hook installed. Register it using your init system; no universal BusyBox boot hook exists.\n'; fi
+                register_startup "$adapter" "$target"
             else
                 grep -q '^# Managed by wtctl$' "$target" || fail 'Not a managed startup file'
                 "$SELF" shutdown; command -v update-rc.d >/dev/null 2>&1 && update-rc.d -f wtctl remove
@@ -768,7 +886,7 @@ help() {
         '  binary configure ram|persistent HTTPS_URL | binary use /absolute/path' \
         '  binary install|update --yes   (destructive, no rollback; async retries)' \
         '  start [NAME|all] | stop [NAME|all] | shutdown | daemon [--background]' \
-        '  startup install|remove openwrt|systemd|sysv --yes' \
+        '  startup install|enable|remove openwrt|systemd|sysv --yes' \
         '  uninstall [--purge] --yes  (remove startup integration first)' \
         'Configuration edits require apply. New tunnels are disabled by default.'
 }
@@ -801,7 +919,7 @@ case "$command" in
     shutdown) if owned_alive "$STATE/daemon"; then send_request shutdown; fi; count=0; while owned_alive "$STATE/daemon" && [ "$count" -lt 30 ]; do sleep 1; count=$((count+1)); done; owned_alive "$STATE/daemon" && fail 'Shutdown did not finish'; exit 0;;
     daemon) case "$*" in '') [ -d "$(current)" ] || apply_config; daemon;; --background) ensure_daemon;; *) fail 'Usage: daemon [--background]';; esac;;
     _worker) worker "$@";; _download) download "$@";;
-    startup) [ "$#" = 3 ] || fail 'Usage: startup install|remove ADAPTER --yes'; case "$1" in install|remove) startup "$@";; *) fail 'Unknown startup action';; esac;;
+    startup) [ "$#" = 3 ] || fail 'Usage: startup install|enable|remove ADAPTER --yes'; case "$1" in install|enable|remove) startup "$@";; *) fail 'Unknown startup action';; esac;;
     uninstall)
         purge=0; case "$*" in --yes) ;; '--purge --yes'|'--yes --purge') purge=1;; *) fail 'Usage: uninstall [--purge] --yes';; esac
         for target in /etc/init.d/wtctl /etc/systemd/system/wtctl.service; do [ ! -f "$target" ] || fail 'Remove startup integration first'; done

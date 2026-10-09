@@ -1,0 +1,16 @@
+{
+  "passed": true,
+  "date": "2026-10-09",
+  "candidate_sha256": "703d3eb74285d03f779e87cdd65ba0d82c2c31ba4b6cf7273458869d30c199cc",
+  "installer_sha256": "591815cd410645f7ec0b527b80d64d30daa5f2b87d5d2e934020488691039b02",
+  "checks": [
+    {"command": "make check", "exit_code": 0, "scope": "POSIX syntax/ShellCheck, Python syntax, six existing helper regressions"},
+    {"command": "./tests/run.sh --all", "exit_code": 0, "lifecycle_grouped_checks_passed": 38, "real_traffic_checks_passed": 4},
+    {"command": "make openwrt-smoke", "exit_code": 0, "scope": "Actual OpenWrt 22.03.4 rc.common registration, disabled/re-enabled doctor output and absence of procd lock creation by doctor"}
+  ],
+  "installer_scenarios": ["PTY prompt defaults to No", "Explicit interactive consent", "Re-enable existing disabled adapter without overwrite", "Decline preserves enabled preference", "Non-interactive default skips registration", "Explicit --startup and --no-startup", "Repeated opt-in installation", "Invalid options rejected before installation"],
+  "doctor_scenarios": ["Absent", "OpenWrt enabled/disabled", "Non-root and read-only OpenWrt inspection", "Inaccessible OpenWrt/SysV registration directories", "Systemd enabled/disabled/masked/unknown", "Unavailable query utilities", "SysV registered/unregistered", "Unmanaged files and dangling symlinks not executed"],
+  "physical_device_modified": false,
+  "physical_qualification_for_this_candidate": false,
+  "historical_physical_candidate_sha256": "aadccde49bb7a788ee215dcd0e6777865f138a31c7bb56c1bb8cbf9c2a4ea720"
+}

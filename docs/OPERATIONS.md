@@ -4,7 +4,12 @@
 
 1. Do not flash firmware, replace vendor feeds, or remove packages to make space.
 2. Copy the portable release to the router over an existing authenticated admin
-   channel. Run `sh scripts/install.sh --yes` as root.
+   channel. Run `sh scripts/install.sh --yes` as root. On a terminal, the installer
+   offers boot autostart (default No). Accepting installs/enables the detected
+   adapter without starting the service now; declining preserves existing boot
+   preferences. Without a terminal it makes no boot changes unless you explicitly
+   pass `--startup openwrt` (or `systemd`/`sysv`). Use `--no-startup` to suppress
+   the prompt and leave registration unchanged.
 3. Run `wtctl doctor`. Local-binary use needs only the documented shell/applet
    baseline and `/proc`. Downloads need curl HTTPS and CA trust; any package
    installation remains an explicit administrator decision.
@@ -17,8 +22,10 @@
    the chosen raw binary is known to fit. There is no automatic storage choice.
 6. `wtctl apply`, then `wtctl daemon --background`. Verify real traffic from
    both ends; process status alone is insufficient.
-7. `wtctl startup install openwrt --yes` registers procd startup at priority 99.
-   It enables future boot startup but does not start the service now. After
+7. If you skipped installer autostart, `wtctl startup enable openwrt --yes`
+   installs procd startup at priority 99 or re-enables the existing managed
+   adapter without rewriting it. It enables future boot startup but does not
+   start the service now. `wtctl doctor` verifies the registration links. After
    stopping a manually launched supervisor with `wtctl shutdown`, run
    `/etc/init.d/wtctl start` to let procd own it. Do not leave two supervisors
    competing for ownership.
@@ -31,10 +38,10 @@ packages. Installing it on a non-OpenWrt distro is rejected.
 
 ## Other init systems
 
-- `wtctl startup install systemd --yes`; subsequently stop any manually launched
+- `wtctl startup enable systemd --yes`; subsequently stop any manually launched
   supervisor and `systemctl start wtctl`. systemd restarts the manager and
   controls its process group.
-- `wtctl startup install sysv --yes` creates `/etc/init.d/wtctl`. It registers
+- `wtctl startup enable sysv --yes` creates or re-enables `/etc/init.d/wtctl`. It registers
   with `update-rc.d` where available; otherwise register the start/stop hook
   using the distribution's documented boot mechanism. Start calls
   `wtctl daemon --background`, preserving disabled tunnel preferences.
@@ -62,7 +69,13 @@ watchdog; it is safe to repeat while that process is already terminating.
 
 ## Troubleshooting without tunnel logs
 
-- `wtctl doctor`: utilities, platform and optional downloader/secret-input tools.
+- `wtctl doctor`: utilities, platform, optional downloader/secret-input tools and
+  boot registration. It inspects marked OpenWrt/SysV files and registration links
+  without executing init scripts. systemd uses read-only `systemctl is-enabled`.
+  Missing tools/permissions are reported as unknown; unmanaged paths are not
+  executed. SysV start-link discovery does not establish the default runlevel,
+  and arbitrary manually configured boot hooks cannot be reliably detected.
+  Boot registration is not the supervisor's current running state.
 - `wtctl status`: supervisor, binary phase, child state, last exit, restart count,
   epoch retry time. `date -d @EPOCH` is optional and not required by the manager.
 - `download-failed`: check WAN, DNS, HTTPS URL, device clock, CA trust and storage.

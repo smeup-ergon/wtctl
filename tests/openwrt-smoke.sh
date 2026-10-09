@@ -1,5 +1,5 @@
 #!/bin/sh
-# OpenWrt userland compatibility only; not procd, download, ABI or hardware acceptance.
+# OpenWrt applets/boot registration only; not procd supervision, downloads or hardware acceptance.
 set -eu
 ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 docker run --rm --platform linux/amd64 --entrypoint /bin/sh -v "$ROOT:/work:ro" \
@@ -15,5 +15,25 @@ export WTCTL_CONFIG_DIR=/test/config WTCTL_STATE_DIR=/test/state
 sleep 2
 /work/wtctl status
 /work/wtctl shutdown
-printf "OpenWrt 22.03.4 userland smoke passed (not hardware qualification).\n"
+(
+    unset WTCTL_CONFIG_DIR WTCTL_STATE_DIR
+    # Normal boot creates this runtime directory; the unbooted rootfs does not.
+    mkdir -p /var/lock
+    sh /work/scripts/install.sh --yes --startup openwrt
+    rm -f /var/lock/procd_wtctl.lock
+    /usr/sbin/wtctl doctor > /test/boot.enabled
+    grep -Fq "Boot integration: openwrt — enabled" /test/boot.enabled
+    test ! -e /var/lock/procd_wtctl.lock
+    /etc/init.d/wtctl disable
+    /usr/sbin/wtctl doctor > /test/boot.disabled
+    grep -Fq "Boot integration: openwrt — disabled" /test/boot.disabled
+    /usr/sbin/wtctl startup enable openwrt --yes
+    /usr/sbin/wtctl doctor > /test/boot.reenabled
+    grep -Fq "Boot integration: openwrt — enabled" /test/boot.reenabled
+    # No procd instance is running in this rootfs: remove only test registration.
+    /etc/init.d/wtctl disable
+    rm /etc/init.d/wtctl
+    /usr/sbin/wtctl uninstall --purge --yes
+)
+printf "OpenWrt 22.03.4 userland and boot registration smoke passed (not hardware qualification).\n"
 '
