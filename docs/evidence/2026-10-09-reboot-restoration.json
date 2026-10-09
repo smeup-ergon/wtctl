@@ -1,0 +1,20 @@
+{
+  "passed": true,
+  "baseline_restored": true,
+  "reboot_evidence": "2026-10-09-software-reboot.json",
+  "original_driver_result_preserved": true,
+  "cleanup_diagnosis": "BusyBox tar extraction changes directory mtimes; all configuration paths, bytes, types, ownership and permissions match. No runtime failure.",
+  "checks": [
+    "Exact configuration entries restored",
+    "Startup enabled and idle supervisor running",
+    "Native RAM binary ready",
+    "No profiles/tunnels/test CA/probe remaining",
+    "Core vendor hashes unchanged",
+    "Packages equal post-removal inventory",
+    "Local vendor panel HTTP 200",
+    "Temporary SSH authorized_keys removed; original file was absent",
+    "Source and deployed manager SHA256 match",
+    "Disposable Docker peer removed"
+  ],
+  "candidate_sha256": "aadccde49bb7a788ee215dcd0e6777865f138a31c7bb56c1bb8cbf9c2a4ea720"
+}

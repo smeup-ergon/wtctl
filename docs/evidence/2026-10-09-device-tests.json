@@ -1,0 +1,228 @@
+{
+  "tests": [
+    {
+      "name": "Preflight: exact candidate, empty deployment, dependencies and private baseline captured"
+    },
+    {
+      "name": "Native MIPS supervisor owned by OpenWrt procd",
+      "clients": 4
+    },
+    {
+      "name": "Initial verified-WSS forward tcp",
+      "protocol": "tcp",
+      "bytes_echoed": 4194304,
+      "rounds": 64,
+      "elapsed_seconds": 12.693625,
+      "echo_MiB_per_second": 0.315119
+    },
+    {
+      "name": "Initial verified-WSS reverse tcp",
+      "bytes_echoed": 4194304,
+      "elapsed_seconds": 12.26014654699975
+    },
+    {
+      "name": "Initial verified-WSS forward udp",
+      "protocol": "udp",
+      "bytes_echoed": 16448,
+      "rounds": 16,
+      "elapsed_seconds": 2.093233,
+      "echo_MiB_per_second": 0.007494
+    },
+    {
+      "name": "Initial verified-WSS reverse udp",
+      "bytes_echoed": 16448,
+      "elapsed_seconds": 0.3604417079986888,
+      "peer_echoed_datagrams": 16
+    },
+    {
+      "name": "20-second four-tunnel resource sample",
+      "aggregate_cpu_percent": 10.27,
+      "rss_sum_kib": 43440,
+      "pss_sum_kib": null,
+      "mem_available_kib": 45160,
+      "overlay_free_kib": 1480,
+      "tmp_free_kib": 34156,
+      "note": "RSS double-counts shared pages; short sample is not sustained-load qualification"
+    },
+    {
+      "name": "Explicit apply changes only affected native client"
+    },
+    {
+      "name": "Temporary stop/start and persistent disable/enable semantics"
+    },
+    {
+      "name": "Independent child failure recovery; siblings preserved"
+    },
+    {
+      "name": "Real procd respawn and owned orphan reconciliation after supervisor SIGKILL"
+    },
+    {
+      "name": "TCP traffic restored after supervisor crash",
+      "protocol": "tcp",
+      "bytes_echoed": 4194304,
+      "rounds": 64,
+      "elapsed_seconds": 20.607525,
+      "echo_MiB_per_second": 0.194104
+    },
+    {
+      "name": "Reverse UDP after supervisor crash",
+      "bytes_echoed": 16448,
+      "elapsed_seconds": 0.3106416260015976,
+      "peer_echoed_datagrams": 16
+    },
+    {
+      "name": "Reverse UDP after peer restart",
+      "bytes_echoed": 16448,
+      "elapsed_seconds": 0.4107847920022323,
+      "peer_echoed_datagrams": 16
+    },
+    {
+      "name": "TCP peer reconnect restores traffic (not a WAN-outage test)"
+    },
+    {
+      "name": "Untrusted test CA blocks payload; verified custom CA restores traffic"
+    },
+    {
+      "name": "Physical SSH pseudo-terminal menu and redacted status"
+    },
+    {
+      "name": "Native raw executable restored through verified HTTPS into RAM"
+    },
+    {
+      "name": "TCP traffic after real binary download/activation",
+      "protocol": "tcp",
+      "bytes_echoed": 4194304,
+      "rounds": 64,
+      "elapsed_seconds": 16.286687,
+      "echo_MiB_per_second": 0.245599
+    },
+    {
+      "name": "Constrained-flash persistent download fails safely without a partial executable"
+    },
+    {
+      "name": "Destructive update removes native binary and schedules recovery",
+      "retry_epoch": 1791546512
+    },
+    {
+      "name": "Explicit stop cancels physical download recovery"
+    },
+    {
+      "name": "Recovered native RAM binary forward tcp",
+      "protocol": "tcp",
+      "bytes_echoed": 4194304,
+      "rounds": 64,
+      "elapsed_seconds": 18.107704,
+      "echo_MiB_per_second": 0.2209
+    },
+    {
+      "name": "Recovered native RAM binary reverse tcp",
+      "bytes_echoed": 4194304,
+      "elapsed_seconds": 13.600957131999166
+    },
+    {
+      "name": "Recovered native RAM binary forward udp",
+      "protocol": "udp",
+      "bytes_echoed": 16448,
+      "rounds": 16,
+      "elapsed_seconds": 2.15754,
+      "echo_MiB_per_second": 0.00727
+    },
+    {
+      "name": "Recovered native RAM binary reverse udp",
+      "bytes_echoed": 16448,
+      "elapsed_seconds": 0.33927866599697154,
+      "peer_echoed_datagrams": 16
+    },
+    {
+      "name": "Physical uninstall stops owned processes and preserves config/external executable"
+    },
+    {
+      "name": "Exact candidate reinstalled after uninstall test"
+    },
+    {
+      "name": "Vendor panel and network/firewall/system/nginx/package baseline preserved"
+    }
+  ],
+  "passed": false,
+  "baseline_restored": true,
+  "cleanup_errors": [],
+  "reboot_performed": false,
+  "wan_interface_modified": false,
+  "failed_tests": [
+    {
+      "name": "Reverse UDP after real binary download/activation",
+      "error": "Disposable peer operation: timeout (command/environment suppressed)",
+      "peer_echoed_datagrams": 8,
+      "requested_datagrams": 16,
+      "owned_client_state": {
+        "qa_ftcp": {
+          "state": "running",
+          "pid": 21317,
+          "exit": "",
+          "restarts": 0
+        },
+        "qa_fudp": {
+          "state": "running",
+          "pid": 21558,
+          "exit": "",
+          "restarts": 0
+        },
+        "qa_rtcp": {
+          "state": "running",
+          "pid": 21699,
+          "exit": "",
+          "restarts": 0
+        },
+        "qa_rudp": {
+          "state": "running",
+          "pid": 21802,
+          "exit": "",
+          "restarts": 0
+        }
+      }
+    }
+  ],
+  "device": {
+    "model": "GL.iNet GL-AR300M (NOR)",
+    "board_name": "glinet,gl-ar300m-nor",
+    "kernel": "5.10.176",
+    "release": {
+      "distribution": "OpenWrt",
+      "version": "22.03.4",
+      "revision": "r20123-38ccc47687",
+      "target": "ath79/nand",
+      "description": "OpenWrt 22.03.4 r20123-38ccc47687"
+    }
+  },
+  "script_sha256": "aadccde49bb7a788ee215dcd0e6777865f138a31c7bb56c1bb8cbf9c2a4ea720",
+  "reverse_udp_failure": {
+    "peer_echoed_datagrams": 8,
+    "requested_datagrams": 16,
+    "owned_client_state": {
+      "qa_ftcp": {
+        "state": "running",
+        "pid": 21317,
+        "exit": "",
+        "restarts": 0
+      },
+      "qa_fudp": {
+        "state": "running",
+        "pid": 21558,
+        "exit": "",
+        "restarts": 0
+      },
+      "qa_rtcp": {
+        "state": "running",
+        "pid": 21699,
+        "exit": "",
+        "restarts": 0
+      },
+      "qa_rudp": {
+        "state": "running",
+        "pid": 21802,
+        "exit": "",
+        "restarts": 0
+      }
+    }
+  }
+}

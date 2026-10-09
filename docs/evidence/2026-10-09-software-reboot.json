@@ -1,0 +1,84 @@
+{
+  "passed": false,
+  "tests": [
+    {
+      "name": "Fresh SSH authentication, exact candidate, empty boot-enabled baseline"
+    },
+    {
+      "name": "Before reboot forward tcp",
+      "protocol": "tcp",
+      "bytes_echoed": 4194304,
+      "rounds": 64,
+      "elapsed_seconds": 31.495529,
+      "echo_MiB_per_second": 0.127002
+    },
+    {
+      "name": "Before reboot reverse tcp",
+      "bytes_echoed": 4194304,
+      "elapsed_seconds": 23.874144427998544
+    },
+    {
+      "name": "Before reboot forward udp",
+      "protocol": "udp",
+      "bytes_echoed": 16448,
+      "rounds": 16,
+      "elapsed_seconds": 3.227589,
+      "echo_MiB_per_second": 0.00486
+    },
+    {
+      "name": "Before reboot reverse udp",
+      "bytes_echoed": 16384,
+      "elapsed_seconds": 0.45460808300049393
+    },
+    {
+      "name": "Unapplied draft and temporary stop prepared; disabled tunnel retained"
+    },
+    {
+      "name": "Software reboot and fresh SSH reconnect",
+      "elapsed_seconds": 159.74
+    },
+    {
+      "name": "RAM probe lost and persistent test CA retained"
+    },
+    {
+      "name": "procd boot ownership, RAM binary automatic recovery, enabled clients and disabled preference"
+    },
+    {
+      "name": "After reboot (last-applied port and temporary-stop reset) forward tcp",
+      "protocol": "tcp",
+      "bytes_echoed": 4194304,
+      "rounds": 64,
+      "elapsed_seconds": 15.364255,
+      "echo_MiB_per_second": 0.260345
+    },
+    {
+      "name": "After reboot (last-applied port and temporary-stop reset) reverse tcp",
+      "bytes_echoed": 4194304,
+      "elapsed_seconds": 18.232981592002034
+    },
+    {
+      "name": "After reboot (last-applied port and temporary-stop reset) forward udp",
+      "protocol": "udp",
+      "bytes_echoed": 16448,
+      "rounds": 16,
+      "elapsed_seconds": 3.694379,
+      "echo_MiB_per_second": 0.004246
+    },
+    {
+      "name": "After reboot (last-applied port and temporary-stop reset) reverse udp",
+      "bytes_echoed": 16384,
+      "elapsed_seconds": 0.7710565000015777
+    }
+  ],
+  "failed_tests": [],
+  "cleanup_errors": [
+    "AssertionError"
+  ],
+  "baseline_restored": false,
+  "reboot_performed": true,
+  "wan_interface_modified": false,
+  "candidate_sha256": "aadccde49bb7a788ee215dcd0e6777865f138a31c7bb56c1bb8cbf9c2a4ea720",
+  "boot_id_before": "36ee5971-c28b-47b4-8b2d-4b0b8051b96a",
+  "reboot_requested": true,
+  "boot_id_after": "f35a7a0c-deae-495c-9764-7ed2d88dc96b"
+}

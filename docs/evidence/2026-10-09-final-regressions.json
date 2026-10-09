@@ -1,0 +1,16 @@
+{
+  "passed": true,
+  "candidate_sha256": "aadccde49bb7a788ee215dcd0e6777865f138a31c7bb56c1bb8cbf9c2a4ea720",
+  "checks": [
+    {"command": "make check", "exit_code": 0, "scope": "Shell syntax/ShellCheck, Python syntax, four restoration and two onsite UDP-result/exit regression tests"},
+    {"command": "./tests/run.sh --all", "exit_code": 0, "lifecycle_checks_passed": 38, "real_container_traffic_checks_passed": 4},
+    {"command": "make openwrt-smoke", "exit_code": 0, "scope": "OpenWrt 22.03.4 x86-64 userland only"}
+  ],
+  "physical_reboot_evidence": "2026-10-09-software-reboot.json",
+  "independent_reboot_cleanup_evidence": "2026-10-09-reboot-restoration.json",
+  "onsite_evidence": "2026-10-09-onsite-tests.json",
+  "onsite_grouped_checks_passed": 29,
+  "completed_followup_scopes": ["Physical power-cycle", "True WAN loss/recovery during operation and at boot", "30-minute concurrent forward/reverse TCP load", "Simulated printer-like TCP stream", "Bounded managed/direct reverse-UDP comparison"],
+  "residual_gates": ["Historical intermittent reverse UDP unresolved", "Actual printer/production LAN behavior outside simulated-stream scope", "Arbitrary-capacity and indefinite-operation qualification"],
+  "production_qualified": false
+}

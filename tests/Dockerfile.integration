@@ -1,0 +1,11 @@
+# Development-only image: downloads the pinned upstream client/server for traffic tests.
+FROM wtctl-tests:local
+ARG WSTUNNEL_VERSION=11.0.0
+RUN curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
+    --connect-timeout 20 --max-time 180 \
+    "https://github.com/erebe/wstunnel/releases/download/v${WSTUNNEL_VERSION}/wstunnel_${WSTUNNEL_VERSION}_linux_amd64.tar.gz" \
+    -o /tmp/wstunnel.tar.gz \
+    && tar -xzf /tmp/wstunnel.tar.gz -C /tmp \
+    && mv /tmp/wstunnel /real-wstunnel && chmod 755 /real-wstunnel \
+    && rm -f /tmp/wstunnel.tar.gz
+ENTRYPOINT ["python3", "/work/tests/traffic.py"]

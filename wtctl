@@ -1,0 +1,813 @@
+#!/bin/sh
+# wtctl: root-operated, POSIX-shell wstunnel client manager for Linux.
+# Configuration is data: never source it, never eval it.
+# shellcheck disable=SC2012,SC2015,SC2016
+# ls is used only for numeric directory ownership; &&/|| guards are intentional.
+set -f
+umask 077
+VERSION=0.1.0
+CONFIG=${WTCTL_CONFIG_DIR:-/etc/wtctl}
+STATE=${WTCTL_STATE_DIR:-/tmp/wtctl}
+SELF=$(CDPATH='' cd -- "$(dirname -- "$0")" && printf '%s/%s' "$(pwd)" "$(basename -- "$0")")
+
+fail() { printf 'wtctl: %s\n' "$*" >&2; exit 1; }
+valid_id() { case "$1" in ''|all|global|*[!A-Za-z0-9_-]*) return 1;; esac; [ ${#1} -le 64 ]; }
+single_line() { [ "$(printf '%s' "$1" | tr -d '\r\n')" = "$1" ]; }
+get() { awk -v key="$2" 'index($0,key "=")==1 {print substr($0,length(key)+2); exit}' "$1" 2>/dev/null; }
+put() { single_line "$2" || fail 'Values must not contain newlines'; printf '%s=%s\n' "$1" "$2"; }
+number() { case "$1" in ''|*[!0-9]*|0[0-9]*) return 1;; esac; [ ${#1} -le 12 ]; }
+port() { number "$1" && [ ${#1} -le 5 ] && [ "$1" -ge 1 ] && [ "$1" -le 65535 ]; }
+host() { printf '%s\n' "$1" | grep -Eq '^([A-Za-z0-9][A-Za-z0-9.-]*|\[[0-9A-Fa-f:]+\])$'; }
+bind_address() {
+    case "$1" in
+        *:*) printf '%s\n' "$1" | grep -Eq '^[0-9A-Fa-f:]+$';;
+        *) printf '%s\n' "$1" | awk -F. 'NF!=4 {exit 1} {for(i=1;i<=4;i++) if($i !~ /^[0-9]+$/ || length($i)>3 || $i>255) exit 1}';;
+    esac
+}
+url() {
+    single_line "$2" || return 1
+    printf '%s\n' "$2" | grep -Eq "^$1://(\[[0-9A-Fa-f:]+\]|[A-Za-z0-9][A-Za-z0-9.-]*)(:[0-9]{1,5})?(/[A-Za-z0-9._~!\$&()*+,;=:@%/?-]*)?$" || return 1
+    authority=${2#*://}; authority=${authority%%/*}
+    case "$authority" in \[*\]) return 0;; *:*) port "${authority##*:}";; esac
+}
+absolute() { case "$1" in /*) ;; *) return 1;; esac; single_line "$1" && case "$1" in *'/../'*|*'/..'|*'/./'*|*'/.'|'/') return 1;; esac; }
+# Reject symlink components, including a pre-created /tmp/wtctl trap.
+safe_path() {
+    absolute "$1" || fail 'Use a non-root absolute path without dot components'
+    rest=${1#/}; checked=
+    while [ -n "$rest" ]; do
+        component=${rest%%/*}; checked=$checked/$component
+        [ ! -L "$checked" ] || fail "Symlink path component: $checked"
+        case "$rest" in */*) rest=${rest#*/};; *) rest=;; esac
+    done
+}
+private_dir() {
+    safe_path "$1"
+    if [ -e "$1" ]; then
+        [ -d "$1" ] || fail "Not a directory: $1"
+        [ "$(ls -nd "$1" | awk '{print $3}')" = 0 ] || fail "Directory is not root-owned: $1"
+    else mkdir -p "$1" || fail "Cannot create $1"; fi
+    chmod 700 "$1" || fail "Cannot protect $1"
+}
+prepare() {
+    [ "$(id -u)" = 0 ] || fail 'Run as root'
+    [ -d /proc/self ] || fail 'Linux /proc must be mounted'
+    case "$CONFIG/" in "$STATE/"*) fail 'Configuration must not be inside runtime state';; esac
+    case "$STATE/" in "$CONFIG/"*) fail 'Runtime state must not be inside configuration';; esac
+    private_dir "$CONFIG"; private_dir "$STATE"
+    for dir in "$CONFIG/servers" "$CONFIG/tunnels" "$STATE/requests" "$STATE/responses" "$STATE/tunnels" "$CONFIG/applied"; do private_dir "$dir"; done
+    if [ ! -f "$CONFIG/global" ]; then
+        { put format 1; put storage ram; put url ''; put external ''; put max_kib 24576; put reserve_kib 1024; } > "$CONFIG/global.new.$$"
+        mv "$CONFIG/global.new.$$" "$CONFIG/global" || fail 'Cannot initialize configuration'
+    fi
+}
+# Linux process start time prevents stale PID files from killing reused PIDs.
+token() { [ -r "/proc/$1/stat" ] && awk '{sub(/^.*\) /, ""); print $20}' "/proc/$1/stat"; }
+alive() {
+    number "$1" && [ -n "$2" ] && [ "$(token "$1")" = "$2" ] && kill -0 "$1" 2>/dev/null || return 1
+    [ "$(awk '{sub(/^.*\) /, ""); print $1}' "/proc/$1/stat" 2>/dev/null)" != Z ]
+}
+owned_alive() { alive "$(get "$1" pid)" "$(get "$1" token)"; }
+record_pid() { { put pid "$2"; put token "$(token "$2")"; } > "$1.new.$$"; mv "$1.new.$$" "$1"; }
+terminate() {
+    tp=$(get "$1" pid); tt=$(get "$1" token)
+    alive "$tp" "$tt" || return 0
+    kill -TERM "$tp" 2>/dev/null || :
+    tries=0
+    while alive "$tp" "$tt" && [ "$tries" -lt 5 ]; do sleep 1; tries=$((tries+1)); done
+    alive "$tp" "$tt" && kill -KILL "$tp" 2>/dev/null
+    return 0
+}
+lock() {
+    LOCK=$STATE/$1.lock
+    attempts=0
+    while ! mkdir "$LOCK" 2>/dev/null; do
+        if [ -f "$LOCK/owner" ] && ! owned_alive "$LOCK/owner"; then
+            rm -f "$LOCK/owner"; rmdir "$LOCK" 2>/dev/null || :
+        fi
+        attempts=$((attempts+1)); [ "$attempts" -lt 10 ] || fail "Busy: $1"
+        sleep 1
+    done
+    record_pid "$LOCK/owner" "$$"
+}
+unlock() { rm -f "$LOCK/owner"; rmdir "$LOCK" 2>/dev/null || :; }
+fields() {
+    [ -f "$1" ] && [ ! -L "$1" ] || return 1
+    awk -v allowed="$2" 'BEGIN {n=split(allowed,a," "); for(i=1;i<=n;i++) ok[a[i]]=1} {p=index($0,"="); k=substr($0,1,p-1); if(!p || !ok[k] || seen[k]++ || index($0,"\r")) exit 1} END {for(k in ok) if(!seen[k]) exit 1}' "$1"
+}
+validate_global() {
+    fields "$1" 'format storage url external max_kib reserve_kib' || return 1
+    [ "$(get "$1" format)" = 1 ] || return 1
+    storage=$(get "$1" storage); source_url=$(get "$1" url); external=$(get "$1" external)
+    case "$storage" in ram|persistent) ;; *) return 1;; esac
+    [ -z "$source_url" ] || url https "$source_url" || return 1
+    [ -z "$external" ] || absolute "$external" || return 1
+    max_kib=$(get "$1" max_kib); reserve_kib=$(get "$1" reserve_kib)
+    number "$max_kib" && [ "$max_kib" -ge 1024 ] && [ "$max_kib" -le 262144 ] &&
+        number "$reserve_kib" && [ "$reserve_kib" -ge 1024 ] && [ "$reserve_kib" -le 262144 ]
+}
+validate_server() {
+    fields "$1" 'endpoint auth prefix username password ca' || return 1
+    endpoint=$(get "$1" endpoint); auth=$(get "$1" auth); prefix=$(get "$1" prefix)
+    username=$(get "$1" username); password=$(get "$1" password); ca=$(get "$1" ca)
+    url wss "$endpoint" || return 1
+    case "$auth" in
+        none) ;;
+        path) printf '%s\n' "$prefix" | grep -Eq '^[A-Za-z0-9._~-]+$' || return 1;;
+        basic) [ -n "$username" ] || return 1; case "$username" in *:*) return 1;; esac;;
+        *) return 1;;
+    esac
+    [ -z "$ca" ] || { absolute "$ca" && [ -f "$ca" ] && [ -r "$ca" ]; }
+}
+validate_tunnel() {
+    fields "$1" 'server direction protocol bind listen target port enabled' || return 1
+    server=$(get "$1" server); direction=$(get "$1" direction); protocol=$(get "$1" protocol)
+    bind=$(get "$1" bind); listen=$(get "$1" listen); target=$(get "$1" target); target_port=$(get "$1" port); enabled=$(get "$1" enabled)
+    valid_id "$server" || return 1
+    case "$direction" in forward|reverse) ;; *) return 1;; esac
+    case "$protocol" in tcp|udp) ;; *) return 1;; esac
+    case "$enabled" in 0|1) ;; *) return 1;; esac
+    bind_address "$bind" && port "$listen" && host "$target" && port "$target_port"
+}
+validate_config() (
+    validate_global "$CONFIG/global" || fail 'Invalid global configuration'
+    set +f
+    for file in "$CONFIG"/servers/*; do
+        [ -e "$file" ] || continue
+        valid_id "${file##*/}" && validate_server "$file" || fail "Invalid server: ${file##*/}"
+    done
+    for file in "$CONFIG"/tunnels/*; do
+        [ -e "$file" ] || continue
+        valid_id "${file##*/}" && validate_tunnel "$file" || fail "Invalid tunnel: ${file##*/}"
+        [ -f "$CONFIG/servers/$server" ] || fail "Unknown server for ${file##*/}"
+        # Compare enabled listeners; reverse listeners conflict only on the same profile.
+        [ "$enabled" = 1 ] || continue
+        for other in "$CONFIG"/tunnels/*; do
+            [ "$file" != "$other" ] || continue
+            [ "$(get "$other" enabled)" = 1 ] || continue
+            [ "$direction" = "$(get "$other" direction)" ] && [ "$protocol" = "$(get "$other" protocol)" ] && [ "$listen" = "$(get "$other" listen)" ] || continue
+            [ "$direction" != reverse ] || [ "$server" = "$(get "$other" server)" ] || continue
+            ob=$(get "$other" bind)
+            if [ "$bind" = "$ob" ] || [ "$bind" = 0.0.0.0 ] || [ "$ob" = 0.0.0.0 ] || [ "$bind" = :: ] || [ "$ob" = :: ]; then
+                fail "Conflicting configured listeners: ${file##*/} and ${other##*/}"
+            fi
+        done
+    done
+)
+apply_config() {
+    lock config
+    trap 'unlock' EXIT
+    validate_config || exit 1
+    base=$(date +%s)-$$; suffix=0
+    generation=$CONFIG/applied/$base-$suffix
+    while [ -e "$generation" ]; do suffix=$((suffix+1)); generation=$CONFIG/applied/$base-$suffix; done
+    mkdir "$generation" || fail 'Cannot create applied configuration'
+    cp "$CONFIG/global" "$generation/global" || fail 'Cannot snapshot configuration'
+    set +f
+    for file in "$CONFIG"/tunnels/*; do
+        [ -e "$file" ] || continue
+        name=${file##*/}; mkdir "$generation/$name" || fail 'Cannot create tunnel snapshot'
+        cp "$file" "$generation/$name/tunnel" || fail 'Cannot snapshot tunnel'
+        cp "$CONFIG/servers/$(get "$file" server)" "$generation/$name/server" || fail 'Cannot snapshot server'
+    done
+    set -f
+    printf '%s\n' "$generation" > "$CONFIG/current.new.$$" && mv "$CONFIG/current.new.$$" "$CONFIG/current" || fail 'Cannot publish applied configuration'
+    unlock; trap - EXIT
+    printf 'Configuration applied.\n'
+}
+current() { head -n 1 "$CONFIG/current" 2>/dev/null; }
+phase() { printf '%s\n' "$1" > "$STATE/binary-status.new.$$"; mv "$STATE/binary-status.new.$$" "$STATE/binary-status"; }
+binary_path() {
+    external=$(get "$1" external)
+    if [ -n "$external" ]; then printf '%s\n' "$external"
+    elif [ "$(get "$1" storage)" = persistent ]; then printf '%s\n' "$CONFIG/bin/wstunnel"
+    else printf '%s\n' "$STATE/bin/wstunnel"; fi
+}
+# Bounded execution without requiring the timeout applet.
+bounded() (
+    limit=$1; shift
+    "$@" & bounded_pid=$!
+    trap 'kill -TERM "$bounded_pid" 2>/dev/null; sleep 1; kill -KILL "$bounded_pid" 2>/dev/null; wait "$bounded_pid" 2>/dev/null; exit 143' TERM INT
+    elapsed=0
+    while kill -0 "$bounded_pid" 2>/dev/null; do
+        if [ "$elapsed" -ge "$limit" ]; then
+            kill -TERM "$bounded_pid" 2>/dev/null; sleep 1; kill -KILL "$bounded_pid" 2>/dev/null; wait "$bounded_pid" 2>/dev/null; exit 124
+        fi
+        sleep 1; elapsed=$((elapsed+1))
+    done
+    wait "$bounded_pid"
+)
+hex() {
+    if command -v od >/dev/null 2>&1; then od -An -tx1 | tr -d ' \n'
+    elif command -v hexdump >/dev/null 2>&1; then hexdump -v -e '1/1 "%02x"'
+    else return 1; fi
+}
+elf() {
+    [ "$(dd if="$1" bs=1 count=4 2>/dev/null | hex)" = 7f454c46 ] || return 1
+    { dd if="$1" bs=1 skip=4 count=2 2>/dev/null; dd if="$1" bs=1 skip=18 count=2 2>/dev/null; } | hex
+}
+validate_binary() (
+    [ -f "$1" ] && [ -x "$1" ] || exit 1
+    identity=$(elf "$1") || exit 1
+    # /proc/PID/exe can identify an emulator under cross-architecture Docker.
+    native=$(elf /bin/sh) || exit 1
+    [ "$identity" = "$native" ] || exit 1
+    help=$(bounded 15 "$1" client --help 2>/dev/null) || exit 1
+    for option in --local-to-remote --remote-to-local --tls-verify-certificate --http-upgrade-credentials --http-upgrade-path-prefix --nb-worker-threads --reverse-tunnel-connection-retry-max-backoff; do
+        printf '%s\n' "$help" | grep -q -- "$option" || exit 1
+    done
+)
+# Download helper is a child so supervisor shutdown can interrupt WAN waits.
+download() {
+    dg=$1; db=$(binary_path "$dg"); du=$(get "$dg" url)
+    [ -z "$(get "$dg" external)" ] || { phase 'external-binary-unavailable'; return 1; }
+    url https "$du" || { phase 'missing-or-invalid-url'; return 1; }
+    command -v curl >/dev/null 2>&1 || { phase 'curl-required-for-verified-https'; return 1; }
+    private_dir "$(dirname "$db")"
+    dm=$(get "$dg" max_kib); dr=$(get "$dg" reserve_kib)
+    free=$(df -Pk "$(dirname "$db")" | awk 'END {print $4}')
+    number "$free" && [ "$free" -ge "$((dm+dr))" ] || { phase 'insufficient-space'; return 1; }
+    rm -f "$db.part"; phase downloading
+    # POSIX ulimit -f uses 512-byte blocks. curl independently bounds bytes/time.
+    (ulimit -f "$((dm*2))" || exit 1
+        exec curl --fail --silent --location --proto '=https' --proto-redir '=https' \
+            --connect-timeout 20 --max-time 180 --max-filesize "$((dm*1024))" --output "$db.part" "$du"
+    ) >/dev/null 2>&1 & downloader=$!
+    record_pid "$STATE/download-child" "$downloader"
+    trap 'terminate "$STATE/download-child"; rm -f "$db.part" "$STATE/download-child"; exit 143' TERM INT
+    wait "$downloader"; result=$?
+    rm -f "$STATE/download-child"
+    trap - TERM INT
+    if [ "$result" != 0 ]; then rm -f "$db.part"; phase download-failed; return 1; fi
+    size=$(wc -c < "$db.part")
+    if [ ! -s "$db.part" ] || [ "$size" -gt "$((dm*1024))" ]; then rm -f "$db.part"; phase empty-or-oversized-binary; return 1; fi
+    chmod 700 "$db.part"
+    validate_binary "$db.part" || { rm -f "$db.part"; phase incompatible-binary; return 1; }
+    mv "$db.part" "$db" || { rm -f "$db.part"; phase activation-failed; return 1; }
+    phase ready
+}
+worker_status() {
+    { put state "$1"; put pid "${child:-}"; put exit "${last_exit:-}"; put restarts "$restarts"; put next_retry "${next_retry:-0}"; } > "$work/status.new.$$"
+    mv "$work/status.new.$$" "$work/status"
+}
+worker_cleanup() {
+    trap '' TERM INT
+    terminate "$work/child"; [ -z "${child:-}" ] || wait "$child" 2>/dev/null
+    child=; next_retry=0; worker_status stopped
+    rm -f "$work/child"
+    exit 0
+}
+worker() {
+    name=$1; snapshot=$2; executable=$3; work=$STATE/tunnels/$name
+    restarts=0; last_exit=; child=; next_retry=0; delay=2
+    trap 'worker_cleanup' TERM INT
+    validate_tunnel "$snapshot/tunnel" && validate_server "$snapshot/server" || fail 'Invalid applied tunnel'
+    case "$bind" in *:*) bind="[$bind]";; esac
+    case "$direction" in forward) flag=-L;; reverse) flag=-R;; esac
+    uri=$protocol://$bind:$listen:$target:$target_port
+    while :; do
+        set -- "$executable" client --tls-verify-certificate --nb-worker-threads 1 --reverse-tunnel-connection-retry-max-backoff 30s "$flag" "$uri"
+        case "$auth" in path) set -- "$@" --http-upgrade-path-prefix "$prefix";; basic) set -- "$@" --http-upgrade-credentials "$username:$password";; esac
+        set -- "$@" "$endpoint"
+        launched=$(date +%s)
+        if [ -n "$ca" ]; then SSL_CERT_FILE=$ca RUST_LOG=off "$@" </dev/null >/dev/null 2>&1 &
+        else RUST_LOG=off "$@" </dev/null >/dev/null 2>&1 & fi
+        child=$!; record_pid "$work/child" "$child"; next_retry=0; worker_status running
+        wait "$child"; last_exit=$?
+        rm -f "$work/child"; child=; restarts=$((restarts+1))
+        now=$(date +%s); [ "$((now-launched))" -lt 60 ] || delay=2
+        next_retry=$((now+delay)); worker_status backoff
+        while [ "$(date +%s)" -lt "$next_retry" ]; do sleep 1; done
+        delay=$((delay*2)); [ "$delay" -le 30 ] || delay=30
+    done
+}
+stop_one() {
+    work=$STATE/tunnels/$1
+    [ -d "$work" ] || return 0
+    terminate "$work/worker"
+    # Also clean a child orphaned by a crashed worker.
+    terminate "$work/child"
+    rm -f "$work/worker" "$work/child" "$work/snapshot"
+    if [ -f "$work/status" ]; then
+        { put state stopped; put pid ''; put exit "$(get "$work/status" exit)"; put restarts "$(get "$work/status" restarts)"; put next_retry 0; } > "$work/status.new.$$"
+        mv "$work/status.new.$$" "$work/status"
+    fi
+}
+stop_workers() {
+    set +f
+    for workdir in "$STATE"/tunnels/*; do [ -d "$workdir" ] || continue; stop_one "${workdir##*/}"; done
+    set -f
+}
+manager_cleanup() {
+    trap '' TERM INT
+    terminate "$STATE/download-worker"; terminate "$STATE/download-child"
+    [ -z "${download_pid:-}" ] || wait "$download_pid" 2>/dev/null
+    stop_workers
+    rm -f "$STATE/download-worker" "$STATE/download-child" "$STATE/daemon" "$STATE/next-download"
+    unlock
+    exit 0
+}
+respond() { printf '%s\n' "$2" > "$STATE/responses/$1.new"; mv "$STATE/responses/$1.new" "$STATE/responses/$1"; }
+process_requests() {
+    set +f
+    for request in "$STATE"/requests/*; do
+        [ -f "$request" ] || continue
+        rid=${request##*/}; action=$(get "$request" action); requested=$(get "$request" name)
+        rm -f "$request"
+        scan_due=0
+        if [ "$action" = shutdown ]; then respond "$rid" ok; manager_cleanup; fi
+        if [ "$action" = update ]; then
+            if [ -n "$(get "$active/global" external)" ]; then respond "$rid" 'error: external binaries cannot be updated'; continue; fi
+            terminate "$STATE/download-worker"; terminate "$STATE/download-child"
+            [ -z "$download_pid" ] || wait "$download_pid" 2>/dev/null
+            download_pid=; stop_workers
+            db=$(binary_path "$active/global"); private_dir "$(dirname "$db")"
+            free=$(df -Pk "$(dirname "$db")" | awk 'END {print $4}')
+            old_size=0; [ ! -f "$db" ] || old_size=$((($(wc -c < "$db")+1023)/1024))
+            needed=$(($(get "$active/global" max_kib)+$(get "$active/global" reserve_kib)))
+            if ! number "$free" || [ "$((free+old_size))" -lt "$needed" ]; then respond "$rid" 'error: insufficient space; binary retained'; continue; fi
+            rm -f "$db" "$db.part"; checked_binary=; download_due=0; download_delay=30; force_download=1
+            : > "$STATE/update-pending"
+            respond "$rid" ok; continue
+        fi
+        case "$action" in start|stop) ;; *) respond "$rid" 'error: invalid request'; continue;; esac
+        if [ "$action:$requested" = stop:all ]; then force_download=0; rm -f "$STATE/update-pending"; fi
+        if [ "$requested" != all ] && { ! valid_id "$requested" || [ ! -d "$active/$requested" ]; }; then respond "$rid" 'error: unknown applied tunnel'; continue; fi
+        for tunnel_dir in "$active"/*; do
+            [ -d "$tunnel_dir" ] || continue
+            name=${tunnel_dir##*/}; [ "$requested" = all ] || [ "$requested" = "$name" ] || continue
+            private_dir "$STATE/tunnels/$name"
+            printf '%s\n' "$action" > "$STATE/tunnels/$name/override"
+            [ "$action" != stop ] || stop_one "$name"
+        done
+        respond "$rid" ok
+    done
+    set -f
+}
+sync_preferences() {
+    set +f
+    for tunnel_dir in "$active"/*; do
+        [ -d "$tunnel_dir" ] || continue
+        name=${tunnel_dir##*/}; private_dir "$STATE/tunnels/$name"; work=$STATE/tunnels/$name
+        preference=$(get "$tunnel_dir/tunnel" enabled)
+        old_preference=$(head -n 1 "$work/preference" 2>/dev/null)
+        if [ -n "$old_preference" ] && [ "$preference" != "$old_preference" ]; then rm -f "$work/override"; fi
+        printf '%s\n' "$preference" > "$work/preference"
+    done
+    set -f
+}
+has_desired() (
+    set +f
+    for tunnel_dir in "$active"/*; do
+        [ -d "$tunnel_dir" ] || continue
+        name=${tunnel_dir##*/}; override=$(head -n 1 "$STATE/tunnels/$name/override" 2>/dev/null)
+        [ "$override" != stop ] || continue
+        if [ "$override" = start ] || [ "$(get "$tunnel_dir/tunnel" enabled)" = 1 ]; then exit 0; fi
+    done
+    exit 1
+)
+reconcile() {
+    set +f
+    for workdir in "$STATE"/tunnels/*; do
+        [ -d "$workdir" ] || continue
+        name=${workdir##*/}
+        if [ ! -d "$active/$name" ]; then stop_one "$name"; rm -rf "$workdir"; fi
+    done
+    for tunnel_dir in "$active"/*; do
+        [ -d "$tunnel_dir" ] || continue
+        name=${tunnel_dir##*/}; work=$STATE/tunnels/$name
+        [ -d "$work" ] || private_dir "$work"
+        override=$(head -n 1 "$work/override" 2>/dev/null)
+        if [ "$override" = stop ] || { [ "$override" != start ] && [ "$(get "$tunnel_dir/tunnel" enabled)" = 0 ]; }; then stop_one "$name"; continue; fi
+        old=$(head -n 1 "$work/snapshot" 2>/dev/null)
+        old_binary=$(head -n 1 "$work/binary" 2>/dev/null)
+        if owned_alive "$work/worker" && [ "$old_binary" = "$executable" ] && cmp -s "$old/tunnel" "$tunnel_dir/tunnel" && cmp -s "$old/server" "$tunnel_dir/server"; then continue; fi
+        stop_one "$name"
+        printf '%s\n' "$tunnel_dir" > "$work/snapshot"
+        printf '%s\n' "$executable" > "$work/binary"
+        "$SELF" _worker "$name" "$tunnel_dir" "$executable" </dev/null >/dev/null 2>&1 &
+        worker_pid=$!; record_pid "$work/worker" "$worker_pid"
+    done
+    set -f
+}
+prune_snapshots() (
+    # Serialize with apply, including the publish-pointer step. A mere lock
+    # existence check races with a generation published during this iteration.
+    LOCK=$STATE/config.lock
+    mkdir "$LOCK" 2>/dev/null || exit 0
+    record_pid "$LOCK/owner" "$$"
+    trap 'unlock' EXIT
+    latest=$(current)
+    set +f
+    for generation in "$CONFIG"/applied/*; do
+        [ -d "$generation" ] && [ "$generation" != "$active" ] && [ "$generation" != "$latest" ] || continue
+        used=0
+        for meta in "$STATE"/tunnels/*/snapshot; do
+            [ -f "$meta" ] || continue
+            case "$(head -n 1 "$meta")" in "$generation"/*) used=1;; esac
+        done
+        [ "$used" = 1 ] || rm -rf "$generation"
+    done
+    set -f
+)
+daemon() {
+    lock daemon
+    trap 'manager_cleanup' TERM INT
+    record_pid "$STATE/daemon" "$$"
+    # Recover owned downloads as well as tunnels after a SIGKILL/crash.
+    terminate "$STATE/download-worker"; terminate "$STATE/download-child"
+    rm -f "$STATE/download-worker" "$STATE/download-child"
+    stop_workers
+    # Runtime overrides never survive a supervisor restart.
+    set +f; rm -f "$STATE"/tunnels/*/override; set -f
+    active=$(current); [ -d "$active" ] || fail 'Run apply before starting the daemon'
+    download_pid=; checked_binary=; download_due=0; download_delay=30; force_download=0; scan_due=0
+    [ ! -f "$STATE/update-pending" ] || force_download=1
+    cp "$active/global" "$STATE/active-global"
+    sync_preferences
+    while :; do
+        latest=$(current)
+        if [ "$latest" != "$active" ]; then
+            active=$latest; scan_due=0
+            if ! cmp -s "$active/global" "$STATE/active-global"; then
+                terminate "$STATE/download-worker"; terminate "$STATE/download-child"
+                [ -z "$download_pid" ] || wait "$download_pid" 2>/dev/null
+                download_pid=; checked_binary=; download_due=0; download_delay=30
+                stop_workers; cp "$active/global" "$STATE/active-global"
+            fi
+            sync_preferences
+        fi
+        process_requests
+        now=$(date +%s)
+        if [ "$now" -lt "$scan_due" ]; then sleep 1; continue; fi
+        scan_due=$((now+5))
+        executable=$(binary_path "$active/global")
+        if [ -n "$download_pid" ] && ! owned_alive "$STATE/download-worker"; then
+            wait "$download_pid"; result=$?; download_pid=; rm -f "$STATE/download-worker"
+            if [ "$result" = 0 ]; then checked_binary=$executable; download_delay=30; download_due=0; force_download=0; rm -f "$STATE/update-pending"
+            else
+                jitter=$((now%7)); download_due=$((now+download_delay+jitter)); download_delay=$((download_delay*2)); [ "$download_delay" -le 294 ] || download_delay=294
+            fi
+        fi
+        if ! has_desired && [ "$force_download" = 0 ]; then
+            if [ -n "$download_pid" ]; then terminate "$STATE/download-worker"; terminate "$STATE/download-child"; wait "$download_pid" 2>/dev/null; download_pid=; fi
+            stop_workers
+            if [ -x "$executable" ]; then phase ready-idle; else phase idle; fi
+            download_due=0
+        elif [ -f "$executable" ] && [ -x "$executable" ]; then
+            if [ "$checked_binary" != "$executable" ]; then
+                if validate_binary "$executable"; then checked_binary=$executable
+                else phase incompatible-binary; checked_binary=; fi
+            fi
+            if [ "$checked_binary" = "$executable" ]; then phase ready; reconcile; fi
+        else
+            stop_workers
+            if [ -z "$download_pid" ] && [ "$now" -ge "$download_due" ]; then
+                cp "$active/global" "$STATE/download-global"
+                "$SELF" _download "$STATE/download-global" </dev/null >/dev/null 2>&1 &
+                download_pid=$!; record_pid "$STATE/download-worker" "$download_pid"
+            fi
+        fi
+        printf '%s\n' "$download_due" > "$STATE/next-download"
+        prune_snapshots
+        sleep 1
+    done
+}
+ensure_daemon() {
+    owned_alive "$STATE/daemon" && return 0
+    [ -d "$(current)" ] || apply_config
+    (trap '' HUP; exec "$SELF" daemon </dev/null >/dev/null 2>&1) &
+    count=0
+    while ! owned_alive "$STATE/daemon"; do count=$((count+1)); [ "$count" -lt 10 ] || fail 'Supervisor did not start'; sleep 1; done
+}
+send_request() {
+    rid=$(date +%s)-$$
+    { put action "$1"; put name "${2:-all}"; } > "$STATE/request.new.$$"
+    mv "$STATE/request.new.$$" "$STATE/requests/$rid"
+    count=0
+    while [ ! -f "$STATE/responses/$rid" ]; do
+        if ! owned_alive "$STATE/daemon"; then
+            # An init system may already have sent TERM. Its supervisor cannot
+            # consume new requests while cleaning up; observed exit is enough
+            # for idempotent shutdown. Do not leave a request for the next daemon.
+            if [ "$1" = shutdown ]; then
+                rm -f "$STATE/requests/$rid" "$STATE/responses/$rid"
+                return 0
+            fi
+            [ -f "$STATE/responses/$rid" ] || fail 'Supervisor stopped before acknowledging request'
+            break
+        fi
+        count=$((count+1)); [ "$count" -lt 90 ] || fail 'Request timed out; check status'
+        sleep 1
+    done
+    response=$(head -n 1 "$STATE/responses/$rid"); rm -f "$STATE/responses/$rid"
+    [ "$response" = ok ] || fail "$response"
+}
+server_write() {
+    operation=$1; name=$2; shift 2; valid_id "$name" || fail 'Invalid server name'
+    lock config; trap 'unlock' EXIT
+    file=$CONFIG/servers/$name
+    case "$operation" in add) [ ! -e "$file" ] || fail 'Server already exists';; edit) [ -f "$file" ] || fail 'Unknown server';; esac
+    endpoint=; auth=none; prefix=v1; username=; password=; ca=
+    if [ "$operation" = edit ]; then validate_server "$file" || fail 'Invalid existing server'; fi
+    while [ "$#" -gt 0 ]; do
+        [ "$#" -ge 2 ] || fail 'Missing option value'
+        case "$1" in
+            --endpoint) endpoint=$2;; --auth) auth=$2;; --prefix) prefix=$2;; --username) username=$2;;
+            --password-file) [ -f "$2" ] || fail 'Password file missing'; password=$(read_secret_file "$2") || fail 'Password file must contain one line';;
+            --ca) ca=$2;; *) fail 'Unknown server option';;
+        esac
+        shift 2
+    done
+    temp=$CONFIG/server.new.$$
+    { put endpoint "$endpoint"; put auth "$auth"; put prefix "$prefix"; put username "$username"; put password "$password"; put ca "$ca"; } > "$temp" || exit 1
+    validate_server "$temp" || { rm -f "$temp"; fail 'Invalid server settings'; }
+    mv "$temp" "$file" || fail 'Cannot save server'
+    unlock; trap - EXIT
+    printf 'Server saved; run apply.\n'
+}
+read_secret_file() {
+    # Accept a single line, with or without one terminal newline.
+    awk 'NR>1 {exit 1} {printf "%s",$0}' "$1" || fail 'Password file must contain one line'
+}
+tunnel_write() {
+    operation=$1; name=$2; shift 2; valid_id "$name" || fail 'Invalid tunnel name'
+    lock config; trap 'unlock' EXIT
+    file=$CONFIG/tunnels/$name
+    case "$operation" in add) [ ! -e "$file" ] || fail 'Tunnel already exists';; edit) [ -f "$file" ] || fail 'Unknown tunnel';; esac
+    server=; direction=forward; protocol=tcp; bind=127.0.0.1; listen=; target=; target_port=; enabled=0
+    if [ "$operation" = edit ]; then validate_tunnel "$file" || fail 'Invalid existing tunnel'; fi
+    while [ "$#" -gt 0 ]; do
+        [ "$#" -ge 2 ] || fail 'Missing option value'
+        case "$1" in --server) server=$2;; --direction) direction=$2;; --protocol) protocol=$2;; --bind) bind=$2;; --listen) listen=$2;; --target) target=$2;; --port) target_port=$2;; *) fail 'Unknown tunnel option';; esac
+        shift 2
+    done
+    temp=$CONFIG/tunnel.new.$$
+    { put server "$server"; put direction "$direction"; put protocol "$protocol"; put bind "$bind"; put listen "$listen"; put target "$target"; put port "$target_port"; put enabled "$enabled"; } > "$temp"
+    validate_tunnel "$temp" && [ -f "$CONFIG/servers/$server" ] || { rm -f "$temp"; fail 'Invalid tunnel settings or unknown server'; }
+    mv "$temp" "$file" || fail 'Cannot save tunnel'
+    unlock; trap - EXIT
+    printf 'Tunnel saved; run apply.\n'
+}
+set_enabled() {
+    [ "$1" = all ] || valid_id "$1" || fail 'Invalid tunnel name'
+    lock config; trap 'unlock' EXIT
+    requested=$1; enabled_value=$2
+    [ "$requested" = all ] || [ -f "$CONFIG/tunnels/$requested" ] || fail 'Unknown tunnel'
+    set +f
+    for file in "$CONFIG"/tunnels/*; do
+        [ -f "$file" ] || continue
+        [ "$requested" = all ] || [ "${file##*/}" = "$requested" ] || continue
+        validate_tunnel "$file" || fail 'Invalid tunnel'
+        awk -v enabled="$enabled_value" '/^enabled=/ {$0="enabled=" enabled} {print}' "$file" > "$CONFIG/tunnel.new.$$" || fail 'Cannot write configuration'
+        mv "$CONFIG/tunnel.new.$$" "$file" || fail 'Cannot save configuration'
+    done
+    set -f
+    unlock; trap - EXIT
+    printf 'Startup preference saved; run apply.\n'
+}
+remove_record() {
+    kind=$1; name=$2; valid_id "$name" || fail 'Invalid name'
+    lock config; trap 'unlock' EXIT
+    [ -f "$CONFIG/$kind/$name" ] || fail 'Unknown record'
+    if [ "$kind" = servers ]; then
+        set +f
+        for file in "$CONFIG"/tunnels/*; do [ -f "$file" ] || continue; [ "$(get "$file" server)" != "$name" ] || fail 'Server is referenced by a tunnel'; done
+        set -f
+    fi
+    rm -f "$CONFIG/$kind/$name"; unlock; trap - EXIT
+    printf 'Removed; run apply.\n'
+}
+binary_configure() {
+    [ "$#" = 2 ] || fail 'Usage: binary configure ram|persistent HTTPS_URL'
+    lock config; trap 'unlock' EXIT
+    { put format 1; put storage "$1"; put url "$2"; put external ''; put max_kib "$(get "$CONFIG/global" max_kib)"; put reserve_kib "$(get "$CONFIG/global" reserve_kib)"; } > "$CONFIG/global.new.$$"
+    validate_global "$CONFIG/global.new.$$" || { rm -f "$CONFIG/global.new.$$"; fail 'Invalid storage mode or HTTPS URL'; }
+    mv "$CONFIG/global.new.$$" "$CONFIG/global" || fail 'Cannot save binary configuration'
+    unlock; trap - EXIT
+    printf 'Binary settings saved; run apply.\n'
+}
+binary_use() {
+    [ "$#" = 1 ] && absolute "$1" || fail 'Supply an absolute executable path'
+    case "$1" in "$CONFIG"/*|"$STATE"/*) fail 'External executables must live outside manager-owned directories';; esac
+    validate_binary "$1" || fail 'Incompatible executable (raw native ELF and supported client CLI required)'
+    lock config; trap 'unlock' EXIT
+    { put format 1; put storage "$(get "$CONFIG/global" storage)"; put url ''; put external "$1"; put max_kib "$(get "$CONFIG/global" max_kib)"; put reserve_kib "$(get "$CONFIG/global" reserve_kib)"; } > "$CONFIG/global.new.$$"
+    validate_global "$CONFIG/global.new.$$" || { rm -f "$CONFIG/global.new.$$"; fail 'Invalid global settings'; }
+    mv "$CONFIG/global.new.$$" "$CONFIG/global" || fail 'Cannot save binary configuration'
+    unlock; trap - EXIT
+    printf 'External binary selected; run apply.\n'
+}
+status() {
+    daemon_state=stopped; owned_alive "$STATE/daemon" && daemon_state=running
+    printf 'Supervisor: %s\nBinary: %s\n' "$daemon_state" "$(head -n 1 "$STATE/binary-status" 2>/dev/null || printf unconfigured)"
+    printf 'Download retry epoch: %s\n' "$(head -n 1 "$STATE/next-download" 2>/dev/null || printf 0)"
+    printf '%-20s %-12s %-8s %-6s %-8s %s\n' TUNNEL STATE PID EXIT RESTARTS NEXT_RETRY
+    active=$(current)
+    set +f
+    for tunnel_dir in "$active"/*; do
+        [ -d "$tunnel_dir" ] || continue
+        name=${tunnel_dir##*/}; work=$STATE/tunnels/$name
+        state=$(get "$work/status" state); [ -n "$state" ] || state=stopped
+        pid=$(get "$work/status" pid)
+        if [ "$state" = running ] && ! owned_alive "$work/child"; then state=stopped; pid=; fi
+        printf '%-20s %-12s %-8s %-6s %-8s %s\n' "$name" "$state" "$pid" "$(get "$work/status" exit)" "$(get "$work/status" restarts)" "$(get "$work/status" next_retry)"
+    done
+    set -f
+    printf 'Process state only; connectivity is not verified. Edits need apply.\n'
+}
+list_records() {
+    set +f
+    for file in "$CONFIG/$1"/*; do
+        [ -f "$file" ] || continue
+        if [ "$1" = servers ]; then printf '%s auth=%s\n' "${file##*/}" "$(get "$file" auth)"
+        else printf '%s server=%s %s/%s enabled=%s\n' "${file##*/}" "$(get "$file" server)" "$(get "$file" direction)" "$(get "$file" protocol)" "$(get "$file" enabled)"; fi
+    done
+    set -f
+}
+doctor() {
+    printf 'wtctl %s; Linux architecture: %s\n' "$VERSION" "$(uname -m)"
+    distro=linux; [ ! -f /etc/openwrt_release ] || distro=openwrt
+    printf 'Platform: %s (architecture alone does not guarantee ABI compatibility)\n' "$distro"
+    missing=0
+    for utility in awk grep tr id ls chmod mkdir rm mv cp dirname basename date sleep head cmp dd wc df uname; do
+        if ! command -v "$utility" >/dev/null 2>&1; then printf 'Missing: %s\n' "$utility"; missing=1; fi
+    done
+    if ! command -v od >/dev/null 2>&1 && ! command -v hexdump >/dev/null 2>&1; then
+        printf 'Missing: od or hexdump (ELF compatibility checks)\n'; missing=1
+    fi
+    if command -v curl >/dev/null 2>&1; then printf 'HTTPS downloader: curl (CA trust must also be provisioned)\n'
+    else
+        printf 'Optional download capability missing: curl and CA trust. Local binaries still work.\n'
+        [ "$distro" != openwrt ] || printf 'Administrator suggestion: opkg install curl ca-bundle\n'
+    fi
+    command -v stty >/dev/null 2>&1 || printf 'Optional secret-entry capability missing: stty\n'
+    [ -d /proc/self ] || { printf 'Missing: mounted Linux /proc\n'; missing=1; }
+    return "$missing"
+}
+ask() { printf '%s' "$1"; IFS= read -r answer || return 1; }
+confirm() { ask "$1 [y/N] " && case "$answer" in y|Y|yes) return 0;; esac; return 1; }
+wizard_server() (
+    ask 'Server name: ' || exit; name=$answer
+    operation=add; [ ! -f "$CONFIG/servers/$name" ] || operation=edit
+    ask 'WSS endpoint: ' || exit; endpoint=$answer
+    ask 'Authentication (none/path/basic) [none]: ' || exit; auth=${answer:-none}
+    set -- server "$operation" "$name" --endpoint "$endpoint" --auth "$auth"
+    case "$auth" in
+        path) ask 'Path prefix: ' || exit; set -- "$@" --prefix "$answer";;
+        basic)
+            ask 'Username: ' || exit; set -- "$@" --username "$answer"
+            if command -v stty >/dev/null 2>&1; then
+                terminal=$(stty -g) || exit 1
+                trap 'stty "$terminal"; rm -f "$STATE/secret.$$"' EXIT
+                trap 'exit 130' INT TERM
+                stty -echo; ask 'Password: '; result=$?; stty "$terminal"; printf '\n'; [ "$result" = 0 ] || exit
+                printf '%s' "$answer" > "$STATE/secret.$$"; set -- "$@" --password-file "$STATE/secret.$$"
+            else
+                printf 'Hidden input unavailable (stty missing); supply an existing private file.\n'
+                ask 'One-line password file: ' || exit
+                set -- "$@" --password-file "$answer"
+            fi;;
+    esac
+    ask 'Custom CA file (empty for system trust): ' || exit; set -- "$@" --ca "$answer"
+    "$SELF" "$@" || exit 1
+    rm -f "$STATE/secret.$$"
+)
+wizard_tunnel() (
+    ask 'Tunnel name: ' || exit; name=$answer
+    operation=add; [ ! -f "$CONFIG/tunnels/$name" ] || operation=edit
+    ask 'Server profile: ' || exit; set -- tunnel "$operation" "$name" --server "$answer"
+    ask 'Direction (forward/reverse) [forward]: ' || exit; set -- "$@" --direction "${answer:-forward}"
+    ask 'Protocol (tcp/udp) [tcp]: ' || exit; set -- "$@" --protocol "${answer:-tcp}"
+    ask 'Bind address [127.0.0.1]: ' || exit; set -- "$@" --bind "${answer:-127.0.0.1}"
+    ask 'Listen port: ' || exit; set -- "$@" --listen "$answer"
+    ask 'Target host: ' || exit; set -- "$@" --target "$answer"
+    ask 'Target port: ' || exit; set -- "$@" --port "$answer"
+    "$SELF" "$@" || exit
+    confirm 'Enable at supervisor startup?' && "$SELF" enable "$name"
+    exit 0
+)
+menu() {
+    [ -t 0 ] && [ -t 1 ] || fail 'Interactive menu requires a terminal'
+    while :; do
+        printf '\nwtctl\n1 Status\n2 Servers\n3 Tunnels\n4 Binary\n5 Apply\n6 Start/stop\n7 Doctor\n8 Startup integration\n0 Quit\n'
+        ask '> ' || return
+        case "$answer" in
+            0) return;; 1) "$SELF" status;;
+            2) "$SELF" server list; ask 'Action (add/edit/remove/back): ' || return; action=$answer
+                case "$action" in add|edit) wizard_server && confirm 'Apply now?' && "$SELF" apply;; remove) ask 'Server name: ' || return; name=$answer; if confirm "Remove $name?"; then "$SELF" server remove "$name"; confirm 'Apply now?' && "$SELF" apply; fi;; esac;;
+            3) "$SELF" tunnel list; ask 'Action (add/edit/enable/disable/remove/back): ' || return; action=$answer
+                case "$action" in add|edit) wizard_tunnel && confirm 'Apply now?' && "$SELF" apply;; enable|disable|remove) ask 'Tunnel name: ' || return; name=$answer; if [ "$action" != remove ] || confirm "Remove $name?"; then case "$action" in remove) "$SELF" tunnel remove "$name";; *) "$SELF" "$action" "$name";; esac; confirm 'Apply now?' && "$SELF" apply; fi;; esac;;
+            4) ask 'Action (configure/use/install/update/back): ' || return
+                case "$answer" in
+                    configure) ask 'Storage (ram/persistent) [ram]: ' || return; storage=${answer:-ram}; ask 'HTTPS raw binary URL: ' || return; "$SELF" binary configure "$storage" "$answer"; confirm 'Apply now?' && "$SELF" apply;;
+                    use) ask 'Absolute binary path: ' && "$SELF" binary use "$answer"; confirm 'Apply now?' && "$SELF" apply;;
+                    install|update) action=$answer; confirm 'Stop tunnels and delete the managed binary? No rollback.' && "$SELF" binary "$action" --yes;;
+                esac;;
+            5) "$SELF" apply;;
+            6) ask 'Action (start/stop): ' || return; action=$answer; case "$action" in start|stop) ask 'Tunnel name or all [all]: ' && "$SELF" "$action" "${answer:-all}";; esac;;
+            7) "$SELF" doctor;;
+            8) ask 'Adapter (openwrt/systemd/sysv): ' || return; adapter=$answer; confirm 'Install and enable startup integration?' && "$SELF" startup install "$adapter" --yes;;
+        esac
+    done
+}
+startup() {
+    action=$1; adapter=$2; approval=${3:-}
+    [ "$approval" = --yes ] || fail 'Startup changes require --yes'
+    [ "$CONFIG" = /etc/wtctl ] && [ "$STATE" = /tmp/wtctl ] || fail 'Startup adapters require default paths'
+    [ "$SELF" = /usr/sbin/wtctl ] || fail 'Install the script at /usr/sbin/wtctl first'
+    case "$adapter" in
+        openwrt)
+            target=/etc/init.d/wtctl
+            if [ "$action" = install ]; then
+                [ -f /etc/rc.common ] && [ -f /etc/openwrt_release ] || fail 'OpenWrt rc.common is required'
+                [ ! -e "$target" ] || fail 'Startup file already exists'
+                { printf '#!/bin/sh /etc/rc.common\n# Managed by wtctl\nUSE_PROCD=1\nSTART=99\nSTOP=15\n';
+                  printf 'start_service() {\n procd_open_instance\n procd_set_param command /usr/sbin/wtctl daemon\n procd_set_param respawn 3600 5 0\n procd_set_param term_timeout 30\n procd_set_param stdout 0\n procd_set_param stderr 0\n procd_close_instance\n}\n'; } > "$target"
+                chmod 755 "$target"; "$target" enable || fail 'Could not enable procd startup'
+            else
+                grep -q '^# Managed by wtctl$' "$target" || fail 'Not a managed startup file'
+                "$target" stop; "$target" disable; rm -f "$target"
+            fi;;
+        systemd)
+            target=/etc/systemd/system/wtctl.service
+            command -v systemctl >/dev/null 2>&1 || fail 'systemctl missing'
+            if [ "$action" = install ]; then
+                [ ! -e "$target" ] || fail 'Startup file already exists'
+                printf '# Managed by wtctl\n[Unit]\nDescription=wstunnel manager\nAfter=network.target\n[Service]\nExecStart=/usr/sbin/wtctl daemon\nRestart=always\nRestartSec=5\nTimeoutStopSec=30\nKillMode=control-group\n[Install]\nWantedBy=multi-user.target\n' > "$target"
+                systemctl daemon-reload; systemctl enable wtctl || fail 'Could not enable service'
+            else
+                grep -q '^# Managed by wtctl$' "$target" || fail 'Not a managed startup file'
+                systemctl disable --now wtctl; rm -f "$target"; systemctl daemon-reload
+            fi;;
+        sysv)
+            target=/etc/init.d/wtctl
+            if [ "$action" = install ]; then
+                [ -d /etc/init.d ] || fail '/etc/init.d is required for a SysV hook'
+                [ ! -e "$target" ] || fail 'Startup file already exists'
+                printf '#!/bin/sh\n# Managed by wtctl\n### BEGIN INIT INFO\n# Provides: wtctl\n# Required-Start: $network\n# Required-Stop: $network\n# Default-Start: 2 3 4 5\n# Default-Stop: 0 1 6\n### END INIT INFO\ncase "$1" in start) /usr/sbin/wtctl daemon --background;; stop) /usr/sbin/wtctl shutdown;; restart) /usr/sbin/wtctl shutdown; /usr/sbin/wtctl daemon --background;; *) exit 1;; esac\n' > "$target"
+                chmod 755 "$target"
+                if command -v update-rc.d >/dev/null 2>&1; then update-rc.d wtctl defaults || fail 'Could not register startup'; else printf 'Hook installed. Register it using your init system; no universal BusyBox boot hook exists.\n'; fi
+            else
+                grep -q '^# Managed by wtctl$' "$target" || fail 'Not a managed startup file'
+                "$SELF" shutdown; command -v update-rc.d >/dev/null 2>&1 && update-rc.d -f wtctl remove
+                rm -f "$target"
+            fi;;
+        *) fail 'Choose openwrt, systemd or sysv';;
+    esac
+}
+help() {
+    printf '%s\n' "wtctl $VERSION — wstunnel client manager" \
+        '  init | doctor | menu | status | apply' \
+        '  server add|edit NAME --endpoint wss://HOST [--auth none|path|basic]' \
+        '      [--prefix VALUE] [--username USER --password-file FILE] [--ca FILE]' \
+        '  server list | server remove NAME' \
+        '  tunnel add|edit NAME --server NAME --listen PORT --target HOST --port PORT' \
+        '      [--direction forward|reverse] [--protocol tcp|udp] [--bind ADDRESS]' \
+        '  tunnel list | tunnel remove NAME | enable NAME|all | disable NAME|all' \
+        '  binary configure ram|persistent HTTPS_URL | binary use /absolute/path' \
+        '  binary install|update --yes   (destructive, no rollback; async retries)' \
+        '  start [NAME|all] | stop [NAME|all] | shutdown | daemon [--background]' \
+        '  startup install|remove openwrt|systemd|sysv --yes' \
+        '  uninstall [--purge] --yes  (remove startup integration first)' \
+        'Configuration edits require apply. New tunnels are disabled by default.'
+}
+command=${1:-}; [ "$#" = 0 ] || shift
+case "$command" in --help|-h|help) help; exit;; --version) printf '%s\n' "$VERSION"; exit;; doctor) doctor; exit $?;; esac
+prepare
+case "$command" in
+    '') if [ -t 0 ] && [ -t 1 ]; then menu; else help; fi;;
+    init) printf 'Initialized %s; runtime %s\n' "$CONFIG" "$STATE";;
+    menu) menu;; status) status;; apply) apply_config;;
+    server|tunnel)
+        [ "$#" -ge 1 ] || fail 'Specify add, edit, remove or list'
+        kind=$command; action=$1; shift
+        case "$action" in
+            list) list_records "${kind}s";;
+            add|edit) [ "$#" -ge 1 ] || fail 'Missing name'; if [ "$kind" = server ]; then server_write "$action" "$@"; else tunnel_write "$action" "$@"; fi;;
+            remove) [ "$#" = 1 ] || fail 'Supply one name'; remove_record "${kind}s" "$1";;
+            *) fail 'Unknown record action';;
+        esac;;
+    enable|disable) [ "$#" = 1 ] || fail 'Supply one tunnel name or all'; enabled_value=0; [ "$command" != enable ] || enabled_value=1; set_enabled "$1" "$enabled_value";;
+    binary)
+        [ "$#" -ge 1 ] || fail 'Specify configure, use, install or update'; action=$1; shift
+        case "$action" in
+            configure) binary_configure "$@";; use) binary_use "$@";;
+            install|update) [ "$#" = 1 ] && [ "$1" = --yes ] || fail 'Destructive binary operation requires --yes'; ensure_daemon; send_request update; printf 'Update queued; use status. Recovery retries while tunnels are wanted.\n';;
+            *) fail 'Unknown binary action';;
+        esac;;
+    start) [ "$#" -le 1 ] || fail 'Supply at most one tunnel name'; ensure_daemon; send_request start "${1:-all}";;
+    stop) [ "$#" -le 1 ] || fail 'Supply at most one tunnel name'; if owned_alive "$STATE/daemon"; then send_request stop "${1:-all}"; else stop_workers; fi;;
+    shutdown) if owned_alive "$STATE/daemon"; then send_request shutdown; fi; count=0; while owned_alive "$STATE/daemon" && [ "$count" -lt 30 ]; do sleep 1; count=$((count+1)); done; owned_alive "$STATE/daemon" && fail 'Shutdown did not finish'; exit 0;;
+    daemon) case "$*" in '') [ -d "$(current)" ] || apply_config; daemon;; --background) ensure_daemon;; *) fail 'Usage: daemon [--background]';; esac;;
+    _worker) worker "$@";; _download) download "$@";;
+    startup) [ "$#" = 3 ] || fail 'Usage: startup install|remove ADAPTER --yes'; case "$1" in install|remove) startup "$@";; *) fail 'Unknown startup action';; esac;;
+    uninstall)
+        purge=0; case "$*" in --yes) ;; '--purge --yes'|'--yes --purge') purge=1;; *) fail 'Usage: uninstall [--purge] --yes';; esac
+        for target in /etc/init.d/wtctl /etc/systemd/system/wtctl.service; do [ ! -f "$target" ] || fail 'Remove startup integration first'; done
+        "$SELF" shutdown || exit 1
+        rm -rf "$STATE"; [ "$purge" = 0 ] || rm -rf "$CONFIG"
+        [ "$SELF" != /usr/sbin/wtctl ] || rm -f "$SELF"
+        printf 'Uninstalled; configuration preserved unless --purge was requested.\n';;
+    *) fail 'Unknown command; use --help';;
+esac

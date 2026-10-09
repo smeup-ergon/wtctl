@@ -1,0 +1,4 @@
+FROM wtctl-traffic:local
+COPY tests/device-peer.py /tests/device-peer.py
+RUN mkdir /evidence
+ENTRYPOINT ["python3", "/tests/device-peer.py"]

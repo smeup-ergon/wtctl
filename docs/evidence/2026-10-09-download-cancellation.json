@@ -1,0 +1,20 @@
+{
+  "tests": [
+    {
+      "name": "Empty device configured for RAM binaries and OpenWrt procd startup"
+    },
+    {
+      "name": "Stop-all interrupts an observed live curl process, removes partial data and cancels retries"
+    },
+    {
+      "name": "Manual install downloads and validates native executable without enabled tunnels",
+      "binary_version": "wstunnel-cli 11.0.0"
+    },
+    {
+      "name": "Boot registration enabled; no fixture tunnels; vendor panel and core configuration preserved"
+    }
+  ],
+  "passed": true,
+  "reboot_performed": false,
+  "wan_interface_modified": false
+}

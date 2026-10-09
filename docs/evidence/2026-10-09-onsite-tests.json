@@ -1,0 +1,287 @@
+{
+  "tests": [
+    {
+      "name": "Empty baseline privately backed up; four enabled test clients and disabled control ready"
+    },
+    {
+      "name": "Before power-cycle forward tcp",
+      "protocol": "tcp",
+      "bytes_echoed": 4194304,
+      "rounds": 64,
+      "elapsed_seconds": 11.757877,
+      "echo_MiB_per_second": 0.340197
+    },
+    {
+      "name": "Before power-cycle reverse tcp",
+      "bytes_echoed": 4194560,
+      "rounds": 64,
+      "elapsed_seconds": 10.541544629999407
+    },
+    {
+      "name": "Before power-cycle forward udp",
+      "protocol": "udp",
+      "bytes_echoed": 16448,
+      "rounds": 16,
+      "elapsed_seconds": 2.211817,
+      "echo_MiB_per_second": 0.007092,
+      "peer_echoed_datagrams": 16
+    },
+    {
+      "name": "Before power-cycle reverse udp",
+      "bytes_echoed": 16448,
+      "rounds": 16,
+      "elapsed_seconds": 0.33875029099726817,
+      "peer_echoed_datagrams": 16
+    },
+    {
+      "name": "Configuration flushed; ready for owner physical power-cycle"
+    },
+    {
+      "name": "Operator physical power-cycle: changed boot ID, lost RAM probe, procd RAM binary recovery, disabled control stopped"
+    },
+    {
+      "name": "After power-cycle forward tcp",
+      "protocol": "tcp",
+      "bytes_echoed": 4194304,
+      "rounds": 64,
+      "elapsed_seconds": 11.780462,
+      "echo_MiB_per_second": 0.339545
+    },
+    {
+      "name": "After power-cycle reverse tcp",
+      "bytes_echoed": 4194560,
+      "rounds": 64,
+      "elapsed_seconds": 11.240978005000215
+    },
+    {
+      "name": "After power-cycle forward udp",
+      "protocol": "udp",
+      "bytes_echoed": 16448,
+      "rounds": 16,
+      "elapsed_seconds": 2.317954,
+      "echo_MiB_per_second": 0.006767,
+      "peer_echoed_datagrams": 16
+    },
+    {
+      "name": "After power-cycle reverse udp",
+      "bytes_echoed": 16448,
+      "rounds": 16,
+      "elapsed_seconds": 0.3131425419996958,
+      "peer_echoed_datagrams": 16
+    },
+    {
+      "name": "Native sustained concurrent forward/reverse TCP with four configured clients",
+      "requested_seconds": 1800,
+      "forward": {
+        "bytes_echoed": 419430400,
+        "verified_connections": 100,
+        "elapsed_seconds": 1807.6137143339984
+      },
+      "reverse": {
+        "bytes_echoed": 419678232,
+        "rounds": 6403,
+        "elapsed_seconds": 1800.3909082780046
+      },
+      "sample_count": 51,
+      "aggregate_owned_cpu_mean_percent": 72.31,
+      "aggregate_owned_cpu_peak_percent": 75.02,
+      "rss_sum_min_kib": 43416,
+      "rss_sum_max_kib": 44024,
+      "mem_available_min_kib": 57964,
+      "mem_available_final_kib": 58512,
+      "restarts_before": 0,
+      "restarts_after": 0,
+      "note": "RSS double-counts shared pages; two TCP clients active, UDP clients idle; bounded workload only"
+    },
+    {
+      "name": "Printer-like reverse TCP burst/idle/reconnect stream",
+      "bytes_echoed": 4141533,
+      "connections": 3,
+      "idle_intervals_seconds": 10,
+      "elapsed_seconds": 79.365581869999,
+      "real_printer": false
+    },
+    {
+      "name": "After sustained load forward tcp",
+      "protocol": "tcp",
+      "bytes_echoed": 4194304,
+      "rounds": 64,
+      "elapsed_seconds": 8.527276,
+      "echo_MiB_per_second": 0.469083
+    },
+    {
+      "name": "After sustained load reverse tcp",
+      "bytes_echoed": 4194560,
+      "rounds": 64,
+      "elapsed_seconds": 10.623116713002673
+    },
+    {
+      "name": "Bounded equivalent managed/direct reverse-UDP comparison completed",
+      "managed_passes": 3,
+      "direct_passes": 3,
+      "attempts_per_mode": 3,
+      "historical_failure_resolved": false
+    },
+    {
+      "name": "Independent timed restore process mechanism verified before WAN interruption"
+    },
+    {
+      "name": "True Wi-Fi WAN loss, unavailable RAM binary, scheduled retry and unattended restoration",
+      "wan_down_seconds": 136,
+      "elapsed_until_recovery_seconds": 292.11,
+      "ssh_unavailable_during_outage": true,
+      "offline_interface_up": false,
+      "saved_network_config_modified": false
+    },
+    {
+      "name": "After true WAN restoration forward tcp",
+      "protocol": "tcp",
+      "bytes_echoed": 4194304,
+      "rounds": 64,
+      "elapsed_seconds": 10.682528,
+      "echo_MiB_per_second": 0.374443
+    },
+    {
+      "name": "After true WAN restoration reverse tcp",
+      "bytes_echoed": 4194560,
+      "rounds": 64,
+      "elapsed_seconds": 10.506688546003716
+    },
+    {
+      "name": "After true WAN restoration forward udp",
+      "protocol": "udp",
+      "bytes_echoed": 16448,
+      "rounds": 16,
+      "elapsed_seconds": 3.093319,
+      "echo_MiB_per_second": 0.005071,
+      "peer_echoed_datagrams": 16
+    },
+    {
+      "name": "After true WAN restoration reverse udp",
+      "bytes_echoed": 16448,
+      "rounds": 16,
+      "elapsed_seconds": 0.3190670420008246,
+      "peer_echoed_datagrams": 16
+    },
+    {
+      "name": "WAN unavailable at boot: RAM binary absent, manager alive/retrying, unattended recovery",
+      "boot_id_before": "25f4e614-3f72-473b-bf70-6e61a4f81b21",
+      "boot_id_after": "bf05aac4-f57e-4b07-975b-306a8bc095f5",
+      "wan_down_seconds": 187,
+      "elapsed_until_recovery_seconds": 273.79,
+      "temporary_boot_fixture_removed": true,
+      "saved_network_config_modified": false
+    },
+    {
+      "name": "After offline-boot WAN restoration forward tcp",
+      "protocol": "tcp",
+      "bytes_echoed": 4194304,
+      "rounds": 64,
+      "elapsed_seconds": 18.429909,
+      "echo_MiB_per_second": 0.217039
+    },
+    {
+      "name": "After offline-boot WAN restoration reverse tcp",
+      "bytes_echoed": 4194560,
+      "rounds": 64,
+      "elapsed_seconds": 10.047177255000861
+    },
+    {
+      "name": "After offline-boot WAN restoration forward udp",
+      "protocol": "udp",
+      "bytes_echoed": 16448,
+      "rounds": 16,
+      "elapsed_seconds": 3.530644,
+      "echo_MiB_per_second": 0.004443,
+      "peer_echoed_datagrams": 16
+    },
+    {
+      "name": "After offline-boot WAN restoration reverse udp",
+      "bytes_echoed": 16448,
+      "rounds": 16,
+      "elapsed_seconds": 0.31356475000211503,
+      "peer_echoed_datagrams": 16
+    },
+    {
+      "name": "Exact empty baseline/startup/native RAM binary/vendor hashes/packages/panel restored; peer/probe/CA removed"
+    },
+    {
+      "name": "Temporary SSH authorization restored to original absence; procd ownership and no fixture processes/boot hooks verified"
+    }
+  ],
+  "failed_tests": [],
+  "cleanup_errors": [],
+  "baseline_restored": true,
+  "candidate_sha256": "aadccde49bb7a788ee215dcd0e6777865f138a31c7bb56c1bb8cbf9c2a4ea720",
+  "boot_id_before_power": "f35a7a0c-deae-495c-9764-7ed2d88dc96b",
+  "prepared": true,
+  "boot_id_after_power": "25f4e614-3f72-473b-bf70-6e61a4f81b21",
+  "power_cycle_verified": true,
+  "udp_comparison": [
+    {
+      "mode": "managed",
+      "iteration": 1,
+      "passed": true,
+      "peer_echoed_datagrams": 16,
+      "bytes_echoed": 16448,
+      "rounds": 16,
+      "elapsed_seconds": 0.3204049589985516
+    },
+    {
+      "mode": "managed",
+      "iteration": 2,
+      "passed": true,
+      "peer_echoed_datagrams": 16,
+      "bytes_echoed": 16448,
+      "rounds": 16,
+      "elapsed_seconds": 0.44408458399993833
+    },
+    {
+      "mode": "managed",
+      "iteration": 3,
+      "passed": true,
+      "peer_echoed_datagrams": 16,
+      "bytes_echoed": 16448,
+      "rounds": 16,
+      "elapsed_seconds": 0.33947912500298116
+    },
+    {
+      "mode": "direct",
+      "iteration": 1,
+      "passed": true,
+      "peer_echoed_datagrams": 16,
+      "bytes_echoed": 16448,
+      "rounds": 16,
+      "elapsed_seconds": 0.49878275000082795
+    },
+    {
+      "mode": "direct",
+      "iteration": 2,
+      "passed": true,
+      "peer_echoed_datagrams": 16,
+      "bytes_echoed": 16448,
+      "rounds": 16,
+      "elapsed_seconds": 0.3746684169964283
+    },
+    {
+      "mode": "direct",
+      "iteration": 3,
+      "passed": true,
+      "peer_echoed_datagrams": 16,
+      "bytes_echoed": 16448,
+      "rounds": 16,
+      "elapsed_seconds": 0.3101793340028962
+    }
+  ],
+  "udp_cause_isolated": false,
+  "passed": true,
+  "scope": "Owner-approved bounded physical tests only; historical reverse-UDP failure remains unresolved",
+  "production_qualified": false,
+  "runtime_candidate_changed": false,
+  "authentication_restored": true,
+  "final_idle_resources": {
+    "overlay_free_kib": 1508,
+    "tmp_free_kib": 47560,
+    "mem_available_kib": 61612
+  }
+}

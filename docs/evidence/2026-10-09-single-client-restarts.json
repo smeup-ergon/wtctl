@@ -1,0 +1,52 @@
+{
+  "tests": [
+    {
+      "name": "Preflight: exact candidate, empty deployment, dependencies and private baseline captured"
+    },
+    {
+      "name": "Native MIPS supervisor owned by OpenWrt procd",
+      "clients": 1
+    },
+    {
+      "name": "Minimal initial reverse-UDP traffic",
+      "bytes_echoed": 16448,
+      "elapsed_seconds": 0.33848104200114904
+    },
+    {
+      "name": "Minimal reverse-UDP immediately after supervisor restart",
+      "iteration": 1,
+      "bytes_echoed": 16448,
+      "elapsed_seconds": 6.415602212000522
+    },
+    {
+      "name": "Minimal reverse-UDP immediately after supervisor restart",
+      "iteration": 2,
+      "bytes_echoed": 16448,
+      "elapsed_seconds": 5.7824161690004985
+    },
+    {
+      "name": "Minimal reverse-UDP immediately after supervisor restart",
+      "iteration": 3,
+      "bytes_echoed": 16448,
+      "elapsed_seconds": 5.948800878000839
+    }
+  ],
+  "passed": true,
+  "baseline_restored": true,
+  "cleanup_errors": [],
+  "reboot_performed": false,
+  "wan_interface_modified": false,
+  "device": {
+    "model": "GL.iNet GL-AR300M (NOR)",
+    "board_name": "glinet,gl-ar300m-nor",
+    "kernel": "5.10.176",
+    "release": {
+      "distribution": "OpenWrt",
+      "version": "22.03.4",
+      "revision": "r20123-38ccc47687",
+      "target": "ath79/nand",
+      "description": "OpenWrt 22.03.4 r20123-38ccc47687"
+    }
+  },
+  "script_sha256": "aadccde49bb7a788ee215dcd0e6777865f138a31c7bb56c1bb8cbf9c2a4ea720"
+}
