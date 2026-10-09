@@ -7,12 +7,11 @@ unset WTCTL_FIXTURE_FAILURE
 W=/work/wtctl
 mkdir -p "$WTCTL_FIXTURE_CAPTURES"
 trap '"$W" shutdown >/dev/null 2>&1 || :' EXIT
-"$W" init
+"$W" status
+mkdir -p "$WTCTL_STATE_DIR/bin"
+cp /fixture "$WTCTL_STATE_DIR/bin/wstunnel"
 "$W" server add race --endpoint wss://example.com
 "$W" tunnel add race --server race --listen 19999 --target localhost --port 80
-"$W" enable race
-"$W" binary use /fixture
-"$W" apply
 "$W" daemon --background
 attempt=0
 while ! grep -q '^state=running$' "$WTCTL_STATE_DIR/tunnels/race/status" 2>/dev/null; do

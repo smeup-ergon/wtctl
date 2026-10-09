@@ -25,11 +25,12 @@ case "$1" in
         touch /test/boot-enabled;;
     enabled) touch /test/doctor-queried-init; test -f /test/boot-enabled;;
     disable) rm -f /test/boot-enabled /etc/rc.d/S*wtctl /etc/rc.d/K*wtctl;;
+    start) /usr/sbin/wtctl daemon --background;;
     stop) /usr/sbin/wtctl shutdown;;
 esac
 RC_COMMON
 chmod 755 /etc/rc.common
-/usr/sbin/wtctl init
+/usr/sbin/wtctl status >/dev/null
 /usr/sbin/wtctl startup install openwrt --yes
 [ -f /test/boot-enabled ]
 boot_report 'Boot integration: openwrt — enabled'
@@ -78,7 +79,16 @@ mv /usr/bin/systemctl.hidden /usr/bin/systemctl
 /usr/sbin/wtctl startup remove systemd --yes
 [ ! -e /etc/systemd/system/wtctl.service ]
 grep -q '^disable --now wtctl$' /test/systemctl.calls
+cat > /usr/bin/update-rc.d <<'UPDATE_RC'
+#!/bin/sh
+case "$*" in
+    'wtctl defaults') mkdir -p /etc/rc2.d; ln -sf ../init.d/wtctl /etc/rc2.d/S99wtctl;;
+    '-f wtctl remove') rm -f /etc/rc2.d/S99wtctl;;
+esac
+UPDATE_RC
+chmod 755 /usr/bin/update-rc.d
 /usr/sbin/wtctl startup install sysv --yes
+rm /etc/rc2.d/S99wtctl
 grep -q 'daemon --background' /etc/init.d/wtctl
 boot_report 'Boot integration: sysv — not registered (manual boot hooks may exist)'
 mkdir -p /etc/rc2.d
@@ -108,9 +118,5 @@ if /usr/sbin/wtctl startup enable openwrt --yes >/dev/null 2>&1; then exit 1; fi
 rm /etc/init.d/wtctl
 /usr/sbin/wtctl uninstall --purge --yes
 [ ! -e /usr/sbin/wtctl ]
-# Verify the separate source installation helper does not register/start anything.
-sh /work/scripts/install.sh --yes
-[ -x /usr/sbin/wtctl ] && [ ! -e /etc/init.d/wtctl ]
-/usr/sbin/wtctl uninstall --purge --yes
 python3 /work/tests/installer.py
 printf 'Startup adapter generation/ownership, doctor and installer checks passed.\n'

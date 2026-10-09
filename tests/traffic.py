@@ -70,7 +70,10 @@ for target in (echo_tcp, echo_udp):
 server_log = open("/test/server.log", "wb")
 server = subprocess.Popen(["/real-wstunnel", "server", "--nb-worker-threads", "1", "--tls-certificate", "/test/server.pem", "--tls-private-key", "/test/server.key", "--restrict-http-upgrade-path-prefix", "test-prefix", "wss://127.0.0.1:18443"], stdout=server_log, stderr=subprocess.STDOUT)
 try:
-    run("init")
+    run("status")
+    pathlib.Path('/test/state/bin').mkdir(parents=True, exist_ok=True)
+    import shutil
+    shutil.copy('/real-wstunnel', '/test/state/bin/wstunnel')
     run("server", "add", "peer", "--endpoint", "wss://localhost:18443", "--ca", "/test/ca.pem", "--auth", "path", "--prefix", "test-prefix")
     for name, direction, protocol, listen, target in (
         ("ft", "forward", "tcp", 18001, 17080),
@@ -79,9 +82,6 @@ try:
         ("ru", "reverse", "udp", 18004, 17081),
     ):
         run("tunnel", "add", name, "--server", "peer", "--direction", direction, "--protocol", protocol, "--listen", str(listen), "--target", "127.0.0.1", "--port", str(target))
-        run("enable", name)
-    run("binary", "use", "/real-wstunnel")
-    run("apply")
     run("daemon", "--background")
     for protocol, port in (("tcp", 18001), ("udp", 18002), ("tcp", 18003), ("udp", 18004)):
         probe(protocol, port)

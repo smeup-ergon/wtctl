@@ -1,241 +1,160 @@
 # wtctl
 
 A small, root-operated **POSIX-shell wstunnel client manager** for Linux.
-Command-first, with a plain numbered terminal menu. No LuCI, UCI, rpcd, Bash,
-Python, jq, dialog, or package-manager integration is required at runtime.
+One setup script, automatic tunnel lifecycle, and single-key menus. No LuCI,
+UCI, rpcd, Bash, Python, jq or dialog is required at runtime.
 
-**Status: development version with bounded native OpenWrt validation.**
-GL-AR300M lifecycle/download, software reboot, physical power-cycle, WAN recovery
-at boot/during operation, 30-minute TCP load and simulated printer-stream tests
-passed. An earlier intermittent reverse-UDP timeout remains unresolved despite
-passing managed/direct comparison trials. Actual printer behavior and arbitrary
-capacity are not qualified.
-See the [physical report](docs/PHYSICAL-TESTS.md). Container success alone is not
-hardware acceptance or a claim of cross-distro qualification.
+**0.2.0 is a development release.** The simplified lifecycle has not been
+requalified on physical hardware. Earlier GL-AR300M evidence describes 0.1.0,
+not this release; an intermittent reverse-UDP timeout remains unresolved.
+See [validation](docs/VALIDATION.md) and [historical physical evidence](docs/PHYSICAL-TESTS.md).
 
-## Features
+## Setup and updates
 
-- Server profiles: WSS, none/path-prefix/basic authentication, custom CA files.
-- Independently enabled forward/reverse TCP/UDP tunnels.
-- A portable supervisor, independent per-tunnel restart/backoff, optional boot adapters.
-- Private persistent configuration, explicit apply, restart only affected tunnels.
-- Explicit RAM/persistent binary storage, supplied HTTPS URL or local binary.
-- Reboot recovery and indefinite, bounded download retries through WAN outages.
-- Process status only; **no tunnel logs**, connectivity claims, or firewall changes.
-
-## Requirements
-
-Linux with mounted `/proc`, root, POSIX `sh`, and these basic utilities (normally
-BusyBox applets): `awk grep tr id ls chmod mkdir rm mv cp dirname basename date
-sleep head cmp dd wc df uname`, plus either `od` or `hexdump` for ELF checks.
-
-Downloads additionally require **curl with HTTPS support and CA trust**. They are
-optional: an existing compatible binary works without curl. We deliberately do
-not rely on varying BusyBox wget TLS implementations. On OpenWrt, `wtctl doctor`
-suggests `opkg install curl ca-bundle`; it never installs packages itself.
-Hidden password entry additionally needs `stty`; when absent, the menu accepts
-an existing one-line password file instead. There is no compiled manager
-or architecture-specific wtctl build. The **wstunnel binary** must match the
-CPU, endianness, ISA, ABI/libc and OS—not merely the SoC name.
-
-## Install
-
-Copy this directory/release to the device and run as root:
+Copy the release directory to the device, then run as root:
 
 ```sh
 sh scripts/install.sh --yes
-wtctl doctor
-wtctl                 # interactive setup menu on a terminal
+wtctl
 ```
 
-Installation puts the single script at `/usr/sbin/wtctl`. On an interactive
-terminal it asks whether to enable boot autostart, defaulting to **No**. It detects
-OpenWrt, running systemd, or conventional SysV registration; if detection is
-inconclusive, accepting the prompt asks you to choose an adapter. Accepting
-installs the adapter or re-enables an existing managed adapter without overwriting
-it. Declining leaves any existing boot preference unchanged.
+Setup asks for RAM/persistent storage and an approved **HTTPS URL serving a raw
+native wstunnel executable**, not an archive. It downloads and validates the
+binary, automatically enables boot startup, and starts the service now. RAM is
+the default for unattended first setup. Existing settings and tunnels are
+preserved on reruns; blank URL input keeps the current source and binary.
 
-For unattended installation, choose explicitly:
+For unattended setup:
 
 ```sh
-sh scripts/install.sh --yes --startup openwrt   # opt in; systemd/sysv also supported
-sh scripts/install.sh --yes --no-startup       # leave boot integration unchanged
+sh scripts/install.sh --yes --storage ram \
+  --url 'https://downloads.example.com/wstunnel-mips-musl' --startup openwrt
 ```
 
-Without a terminal or `--startup`, no boot changes are made. Registration does
-not start the service now; SysV systems without `update-rc.d` still need manual
-boot-hook registration. Installation does not download binaries or change
-firmware/feeds. No build is needed. You can also execute `./wtctl` directly as root
-for development.
+OpenWrt and running systemd are detected automatically, as is SysV with
+`update-rc.d`. Use `--startup systemd` or `--startup sysv` to select explicitly.
+If detection fails, the interactive wizard offers numbered adapters; unattended
+setup requires `--startup`. SysV without `update-rc.d` fails rather than falsely
+claiming automatic boot registration. Startup integration requires default
+paths and installation at `/usr/sbin/wtctl`.
 
-### Command-first setup
+**Update by rerunning the same script with `--url`:**
 
 ```sh
-wtctl init
+sh scripts/install.sh --yes --url 'https://downloads.example.com/new-wstunnel'
+```
+
+An explicitly supplied URL triggers replacement even if the URL is unchanged.
+The candidate downloads and validates while existing tunnels keep running.
+Activation briefly stops clients, retains the old binary until local startup is
+acknowledged, and rolls back on failure. Failed downloads leave the old binary,
+configuration and clients intact. Changing storage uses the same safe process.
+No separate init, apply, binary configure/install/update, or enable/disable commands.
+
+## Tunnels
+
+Use `wtctl` for the menu, or use the CLI:
+
+```sh
 wtctl server add office --endpoint wss://tunnel.example.com --auth path --prefix YOUR_PREFIX
 wtctl tunnel add printer --server office --direction reverse --protocol tcp \
   --bind 127.0.0.1 --listen 9100 --target 192.168.1.50 --port 9100
-wtctl enable printer
-
-# URL must serve a RAW executable, not an archive. Supply your approved build.
-wtctl binary configure ram 'https://downloads.example.com/wstunnel-mips-musl'
-# Or: wtctl binary use /opt/wstunnel
-
-wtctl apply
-wtctl daemon --background
 wtctl status
 ```
 
-New tunnels are disabled by default. Non-loopback binds are supported without an
-extra approval prompt; their exposure is the administrator's responsibility.
-For reverse tunnels, the bind/listen address is on the **remote server** and the
-target is reached from this device. For forward tunnels, the listener is local
-and the target is reached from the server. IPv6 target literals use brackets;
-bind literals do not: `--bind ::1 --target '[::1]'`.
+**Every saved tunnel starts immediately and automatically at boot.** Edits apply
+implicitly, restarting only affected tunnels. Editing a shared server restarts
+all its tunnels; the menu shows the affected names before saving. Invalid
+configuration or inability to start the local worker restores the previous
+record and snapshot. Remote outages/client failures retain the tunnel and retry.
+Acknowledgment is **not a connectivity or socket-reservation guarantee**.
 
-For basic authentication, avoid putting passwords on command lines:
+To stop a tunnel permanently:
 
 ```sh
-# Create a private one-line file securely, or use the hidden-input menu.
+wtctl tunnel remove printer
+```
+
+There are no disabled tunnels or temporary-stop states. A server referenced by
+a tunnel cannot be removed. Removing a tunnel also stops its owned worker/client.
+
+For reverse tunnels, bind/listen is on the remote server and the target is
+reached from this device. For forward tunnels, the listener is local and the
+target is reached from the server. Non-loopback exposure is your responsibility;
+no firewall or server authorization changes are made. IPv6 targets use brackets,
+e.g. `--bind ::1 --target '[::1]'`.
+
+Basic authentication uses hidden menu entry or a private one-line password file:
+
+```sh
 wtctl server edit office --auth basic --username USER --password-file /root/wstunnel.password
-wtctl apply
 ```
 
-Passwords remain plaintext in root-only configuration and may appear in
-privileged wstunnel process arguments. CLI output redacts endpoints and secrets.
+Passwords are plaintext in root-only configuration and can appear in privileged
+client process arguments. Status/listings redact credentials and endpoints.
 
-## Lifecycle
+## Menus
 
-| Command | Behavior |
-| --- | --- |
-| `apply` | Validate/snapshot saved config; running supervisor reconciles it within about 5 seconds |
-| `daemon` | Run supervisor in foreground; suitable for an init system |
-| `daemon --background` | Launch supervisor and restore enabled tunnels only |
-| `start [NAME\|all]` | Launch supervisor if necessary; explicitly start named/all applied tunnels, even disabled ones |
-| `stop [NAME\|all]` | Temporarily stop named/all tunnels; `stop all` cancels downloads/retries too |
-| `enable NAME\|all` / `disable NAME\|all` | Save startup preference; requires `apply` |
-| `shutdown` | Stop supervisor, owned download tasks and owned tunnels; an active init watchdog may restart it |
-| `status` | Supervisor/binary phase, child PID, last exit, restart count, retry epoch |
+All choices, confirmations, and existing server/tunnel selections have keys.
+Press `1`–`9` directly; longer lists continue with `a`–`z`. `0` is always
+Back/Exit/Cancel. No Enter or pagination is needed for ordinary choices. URLs,
+names, addresses, ports and credentials remain normal text entry with Enter.
+Without usable `stty`, choices fall back to Enter-based input. Lists exceeding
+35 entries use numbered line input rather than ambiguous multi-key shortcuts.
+EOF and signals restore terminal settings. Editing uses a complete wizard;
+CLI edits can change individual fields.
 
-For an init-owned supervisor, stop its service (`/etc/init.d/wtctl stop` or
-`systemctl stop wtctl`) to prevent the init watchdog restarting it. Concurrent
-shutdown is idempotent even when init already sent TERM.
+## Requirements and recovery
 
-Configuration edits never take effect until `apply`, including after reboot:
-the last applied snapshot is persistent. First launch creates an initial snapshot
-if none exists. A temporary stop survives
-ordinary applies. Changing enabled/disabled preference through apply clears that
-tunnel's temporary override. Supervisor restart clears all temporary overrides
-and restores enabled tunnels. Restart counters are per worker lifetime, not
-persistent history. Tunnel output is discarded. `status` is **not** a traffic
-health check.
+Linux, mounted `/proc`, root, POSIX `sh`, and basic utilities (normally BusyBox):
+`awk grep tr id ls chmod mkdir rm mv cp dirname basename date sleep head cmp dd
+wc df uname cut`, plus `od` or `hexdump`. Setup/download recovery needs **curl
+with HTTPS and CA trust**. Existing managed binaries operate without curl.
+`wtctl doctor` reports capabilities; it never installs dependencies.
+Single-key navigation and hidden passwords need `stty`; without it, passwords
+are supplied through an existing private file.
 
-### Downloads and destructive updates
+Binary checks compare ELF class/endianness/machine with `/bin/sh` and run a
+bounded client-help check. They do **not** prove authenticity, complete ABI/ISA
+compatibility or connectivity. Administrator-selected code executes as root.
+No checksum/signature requirement is imposed.
 
-```sh
-wtctl binary install --yes
-wtctl binary update --yes
-```
+Downloads require space for the retained old binary plus a candidate of up to
+24 MiB and 1 MiB reserve. Verified HTTPS-only redirects, connection/transfer
+limits and size bounds apply. Missing RAM binaries recover after reboot while
+any tunnel exists; failures retry indefinitely with bounded exponential backoff
+and jitter. RAM mode needs working networking, CA trust and a correct TLS clock.
+Persistent mode reuses its existing compatible binary.
 
-Both are explicit destructive operations: **stop owned tunnels, remove the
-selected managed binary, download/validate its replacement**. No rollback. A
-failed update leaves tunnels down until recovery succeeds. Existing external
-binaries are never updated or removed. Managed storage is space-checked first.
-
-Downloads use verified HTTPS, HTTPS-only redirects, 20-second connection and
-180-second transfer timeouts, and a size bound. Default capacity budget: 24 MiB
-plus 1 MiB reserve. Downloads stage into a non-executable `.part` file, compare
-ELF class/endianness/machine with `/bin/sh`, then execute a bounded client-help
-compatibility check and rename the accepted candidate. These checks are **not
-proof of full ABI compatibility or authenticity**. There are deliberately no
-required checksums. Administrator-selected code executes as root during validation.
-
-Failures retry indefinitely: approximately 30 seconds initially, exponential
-backoff to approximately 5 minutes, with jitter. Supervisor polling can add a
-few seconds. Automatic recovery happens while any tunnel is wanted; explicit
-install/update also downloads without active tunnels. `stop all` cancels that
-explicit recovery request. RAM mode needs a working network and trusted TLS
-clock/CA setup after every reboot; persistent mode does not re-download an
-existing compatible binary on startup.
-
-## Boot integration
-
-If you skipped the installer prompt, enable startup later, preferably after
-applying a working configuration:
-
-```sh
-wtctl startup enable openwrt --yes
-# Alternatives: systemd or sysv
-wtctl doctor
-```
-
-`startup enable` installs a missing adapter or re-enables an existing matching
-managed adapter without rewriting it. `startup install` remains available for
-first-time registration and refuses an existing startup file.
-
-Adapters require installation at `/usr/sbin/wtctl` and default config/state paths.
-Installation enables future boot startup; it does not start the service now.
-OpenWrt procd/systemd supervise only the portable manager, not each tunnel.
-The SysV adapter registers with `update-rc.d` if available; otherwise it prints
-that manual boot-hook registration is still required. Linux/BusyBox has no
-universal boot hook. `wtctl doctor` reports boot integration separately from
-current supervisor state: OpenWrt enabled/disabled, systemd's registration state,
-or detected SysV start links. Missing query tools or insufficient permissions
-report **unknown**, not enabled. Unmanaged files/symlinks are reported but never
-executed; custom boot hooks cannot be reliably detected. OpenWrt/SysV link
-inspection optionally uses `readlink`; its absence does not fail other doctor
-checks. Use `wtctl status` for current process state. See
-[installation and operation](docs/OPERATIONS.md).
+`wtctl status` reports supervisor/binary phase, child PID, exit, restart count
+and retry epoch. No tunnel logs or traffic-health claims. `daemon` and
+`shutdown` remain service plumbing, not tunnel controls. Stop the owning service
+(`/etc/init.d/wtctl stop` or `systemctl stop wtctl`) for maintenance; an active
+init watchdog can undo a direct shutdown.
 
 ## Uninstall
 
-Run these commands **as root** on the device.
+Remove the adapter used by setup, then uninstall as root:
 
-1. **Remove startup integration first**, if you installed it. Choose only the
-   adapter you used; this stops the service and removes its startup registration:
+```sh
+wtctl startup remove openwrt --yes  # or systemd/sysv
+wtctl uninstall --yes              # preserves configuration/persistent binary
+# Instead, for irreversible deletion of manager configuration and credentials:
+# wtctl uninstall --purge --yes
+```
 
-   ```sh
-   wtctl startup remove openwrt --yes
-   # On other systems, use one of these instead:
-   # wtctl startup remove systemd --yes
-   # wtctl startup remove sysv --yes
-   ```
-
-   If you never installed startup integration, skip this step. Remove any custom
-   boot hooks or manually registered SysV hooks yourself before continuing.
-
-2. **Choose one uninstall mode:**
-
-   Preserve configuration and any managed persistent binary for a later reinstall:
-
-   ```sh
-   wtctl uninstall --yes
-   ```
-
-   **Or**, to delete all manager-owned configuration, credentials and the managed
-   persistent binary too, use this **instead**. Back up `/etc/wtctl` first if needed;
-   deletion is irreversible:
-
-   ```sh
-   wtctl uninstall --purge --yes
-   ```
-
-Both modes stop owned tunnels/downloads, remove runtime state (including the RAM
-binary), and remove the installed `/usr/sbin/wtctl` script. External binaries are
-never removed. Neither mode removes curl/CA packages or changes network/firewall
-settings. Downloaded release directories are not removed automatically.
+Packages, networking, firewall settings and release directories are untouched.
+This fresh-install schema intentionally has no 0.1.0 migration.
 
 ## Development
 
 ```sh
-make check          # syntax + ShellCheck (Docker)
-make test           # BusyBox fixture lifecycle/download tests
+make check          # syntax, ShellCheck, Python helpers
+make test           # BusyBox lifecycle/download/setup and real PTY regressions
 make integration    # real wstunnel v11, verified TLS, forward/reverse TCP/UDP
-make openwrt-smoke   # OpenWrt 22.03.4 container userland only
-make dist           # portable source/script release in dist/
+make openwrt-smoke   # OpenWrt userland/adapter registration, not a boot test
+make dist           # portable release in dist/
 ```
 
-Development containers need Docker and download testing packages; those are not
-device dependencies. Traffic tests download upstream v11.0.0 linux/amd64 into a
-container only. `tests/run.sh --all` runs both suites. See
-[design](docs/DESIGN.md) and [validation/release gates](docs/VALIDATION.md).
+Physical 0.1.0 harnesses are version-gated historical tools, not acceptance
+coverage for 0.2.0. See [design](docs/DESIGN.md) and [operations](docs/OPERATIONS.md).

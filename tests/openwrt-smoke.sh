@@ -7,10 +7,12 @@ docker run --rm --platform linux/amd64 --entrypoint /bin/sh -v "$ROOT:/work:ro" 
 set -e
 export WTCTL_CONFIG_DIR=/test/config WTCTL_STATE_DIR=/test/state
 /work/wtctl doctor
-/work/wtctl init
+/work/wtctl status
 /work/wtctl server add test --endpoint wss://example.com
-/work/wtctl tunnel add test --server test --listen 19001 --target localhost --port 80
-/work/wtctl apply
+# No native client/downloader is provisioned in this unbooted rootfs. A tunnel
+# mutation must fail and roll back instead of claiming local startup.
+if /work/wtctl tunnel add test --server test --listen 19001 --target localhost --port 80; then exit 1; fi
+test ! -e /test/config/tunnels/test
 /work/wtctl daemon --background
 sleep 2
 /work/wtctl status
@@ -19,7 +21,12 @@ sleep 2
     unset WTCTL_CONFIG_DIR WTCTL_STATE_DIR
     # Normal boot creates this runtime directory; the unbooted rootfs does not.
     mkdir -p /var/lock
-    sh /work/scripts/install.sh --yes --startup openwrt
+    # Adapter-only smoke: full setup requires an approved native download.
+    mkdir -p /usr/sbin
+    cp /work/wtctl /usr/sbin/wtctl
+    chmod 755 /usr/sbin/wtctl
+    /usr/sbin/wtctl status >/dev/null
+    /usr/sbin/wtctl startup enable openwrt --yes
     rm -f /var/lock/procd_wtctl.lock
     /usr/sbin/wtctl doctor > /test/boot.enabled
     grep -Fq "Boot integration: openwrt — enabled" /test/boot.enabled

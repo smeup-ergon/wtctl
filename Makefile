@@ -1,4 +1,4 @@
-VERSION := 0.1.0
+VERSION := 0.2.0
 .PHONY: check test integration openwrt-smoke dist
 check:
 	sh -n wtctl scripts/install.sh tests/run.sh tests/test.sh tests/startup.sh tests/openwrt-smoke.sh tests/build-device-probe.sh tests/shutdown-race.sh

@@ -1,6 +1,31 @@
 # Validation and release gates
 
-## Development evidence
+## 0.2.0 simplified lifecycle
+
+This release changes the configuration schema and lifecycle. There are no existing
+installations to migrate. New coverage exercises implicit mutations/rollback,
+automatic startup of every saved tunnel, affected-only/shared-profile restart,
+RAM/persistent boot recovery, nondestructive failed updates, supplied-URL replacement,
+idempotent setup, automatic boot/service startup, single-key numeric/letter menus,
+hidden secrets and terminal restoration on EOF/signals.
+
+Local validation passed for this worktree: `make check` (syntax/ShellCheck,
+6 historical-helper unit tests, Python AST parsing), `./tests/run.sh --all`
+(26 fixture groups and 4 real verified-TLS traffic checks), `make openwrt-smoke`,
+and `git diff --check`. Real PTYs cover numeric/letter choices without Enter,
+invalid-key handling, missing-stty fallback, hidden secrets, and both menu and
+password EOF/signal restoration. Init ownership in fixture tests uses shims;
+the OpenWrt rootfs exercises actual adapter registration, not booted procd.
+See [local evidence](evidence/simplification-local.json). No physical
+0.2.0 acceptance is claimed. The older physical harnesses are version-gated before
+device mutations/reboots because their disabled/draft/destructive-update assertions
+are incompatible. Required new physical gates: full setup/service ownership, latest
+saved settings across reboot/power cycle, WAN recovery, failed update rollback,
+actual footprint/performance, and the unresolved reverse-UDP behavior. SIGKILL or
+power loss during a multi-file transaction is not crash-atomic; qualify interruption
+recovery separately before production use.
+
+## Historical 0.1.0 development evidence
 
 Executed locally in Docker on 2026-10-09, with isolated container configuration
 and processes. Physical results are recorded separately below. Old-project

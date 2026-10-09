@@ -139,6 +139,9 @@ print(json.dumps({'bytes_echoed':len(payload)*count,'elapsed_seconds':time.monot
         return all(any(line.startswith(name + ' ') and 'running' in line for line in text.splitlines())
                    for name in ('rb_ftcp', 'rb_fudp', 'rb_rtcp', 'rb_rudp'))
 
+    if ssh('wtctl --version').strip() != b'0.1.0':
+        parser.error('Historical 0.1.0 harness: no reboot/device changes performed; automatic lifecycle needs new qualification')
+
     try:
         ssh('test -x /usr/sbin/wtctl; /etc/init.d/wtctl enabled; '
             'test -z "$(ls -A /etc/wtctl/servers)"; test -z "$(ls -A /etc/wtctl/tunnels)"; '

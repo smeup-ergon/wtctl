@@ -5,7 +5,7 @@
 # ls is used only for numeric directory ownership; &&/|| guards are intentional.
 set -f
 umask 077
-VERSION=0.1.0
+VERSION=0.2.0
 CONFIG=${WTCTL_CONFIG_DIR:-/etc/wtctl}
 STATE=${WTCTL_STATE_DIR:-/tmp/wtctl}
 SELF=$(CDPATH='' cd -- "$(dirname -- "$0")" && printf '%s/%s' "$(pwd)" "$(basename -- "$0")")
@@ -57,7 +57,7 @@ prepare() {
     private_dir "$CONFIG"; private_dir "$STATE"
     for dir in "$CONFIG/servers" "$CONFIG/tunnels" "$STATE/requests" "$STATE/responses" "$STATE/tunnels" "$CONFIG/applied"; do private_dir "$dir"; done
     if [ ! -f "$CONFIG/global" ]; then
-        { put format 1; put storage ram; put url ''; put external ''; put max_kib 24576; put reserve_kib 1024; } > "$CONFIG/global.new.$$"
+        { put format 2; put storage ram; put url ''; put max_kib 24576; put reserve_kib 1024; } > "$CONFIG/global.new.$$"
         mv "$CONFIG/global.new.$$" "$CONFIG/global" || fail 'Cannot initialize configuration'
     fi
 }
@@ -96,12 +96,11 @@ fields() {
     awk -v allowed="$2" 'BEGIN {n=split(allowed,a," "); for(i=1;i<=n;i++) ok[a[i]]=1} {p=index($0,"="); k=substr($0,1,p-1); if(!p || !ok[k] || seen[k]++ || index($0,"\r")) exit 1} END {for(k in ok) if(!seen[k]) exit 1}' "$1"
 }
 validate_global() {
-    fields "$1" 'format storage url external max_kib reserve_kib' || return 1
-    [ "$(get "$1" format)" = 1 ] || return 1
-    storage=$(get "$1" storage); source_url=$(get "$1" url); external=$(get "$1" external)
+    fields "$1" 'format storage url max_kib reserve_kib' || return 1
+    [ "$(get "$1" format)" = 2 ] || return 1
+    storage=$(get "$1" storage); source_url=$(get "$1" url)
     case "$storage" in ram|persistent) ;; *) return 1;; esac
     [ -z "$source_url" ] || url https "$source_url" || return 1
-    [ -z "$external" ] || absolute "$external" || return 1
     max_kib=$(get "$1" max_kib); reserve_kib=$(get "$1" reserve_kib)
     number "$max_kib" && [ "$max_kib" -ge 1024 ] && [ "$max_kib" -le 262144 ] &&
         number "$reserve_kib" && [ "$reserve_kib" -ge 1024 ] && [ "$reserve_kib" -le 262144 ]
@@ -120,13 +119,12 @@ validate_server() {
     [ -z "$ca" ] || { absolute "$ca" && [ -f "$ca" ] && [ -r "$ca" ]; }
 }
 validate_tunnel() {
-    fields "$1" 'server direction protocol bind listen target port enabled' || return 1
+    fields "$1" 'server direction protocol bind listen target port' || return 1
     server=$(get "$1" server); direction=$(get "$1" direction); protocol=$(get "$1" protocol)
-    bind=$(get "$1" bind); listen=$(get "$1" listen); target=$(get "$1" target); target_port=$(get "$1" port); enabled=$(get "$1" enabled)
+    bind=$(get "$1" bind); listen=$(get "$1" listen); target=$(get "$1" target); target_port=$(get "$1" port)
     valid_id "$server" || return 1
     case "$direction" in forward|reverse) ;; *) return 1;; esac
     case "$protocol" in tcp|udp) ;; *) return 1;; esac
-    case "$enabled" in 0|1) ;; *) return 1;; esac
     bind_address "$bind" && port "$listen" && host "$target" && port "$target_port"
 }
 validate_config() (
@@ -140,11 +138,9 @@ validate_config() (
         [ -e "$file" ] || continue
         valid_id "${file##*/}" && validate_tunnel "$file" || fail "Invalid tunnel: ${file##*/}"
         [ -f "$CONFIG/servers/$server" ] || fail "Unknown server for ${file##*/}"
-        # Compare enabled listeners; reverse listeners conflict only on the same profile.
-        [ "$enabled" = 1 ] || continue
+        # Reverse listeners conflict only on the same profile.
         for other in "$CONFIG"/tunnels/*; do
             [ "$file" != "$other" ] || continue
-            [ "$(get "$other" enabled)" = 1 ] || continue
             [ "$direction" = "$(get "$other" direction)" ] && [ "$protocol" = "$(get "$other" protocol)" ] && [ "$listen" = "$(get "$other" listen)" ] || continue
             [ "$direction" != reverse ] || [ "$server" = "$(get "$other" server)" ] || continue
             ob=$(get "$other" bind)
@@ -154,9 +150,7 @@ validate_config() (
         done
     done
 )
-apply_config() {
-    lock config
-    trap 'unlock' EXIT
+publish_config() {
     validate_config || exit 1
     base=$(date +%s)-$$; suffix=0
     generation=$CONFIG/applied/$base-$suffix
@@ -172,15 +166,11 @@ apply_config() {
     done
     set -f
     printf '%s\n' "$generation" > "$CONFIG/current.new.$$" && mv "$CONFIG/current.new.$$" "$CONFIG/current" || fail 'Cannot publish applied configuration'
-    unlock; trap - EXIT
-    printf 'Configuration applied.\n'
 }
 current() { head -n 1 "$CONFIG/current" 2>/dev/null; }
 phase() { printf '%s\n' "$1" > "$STATE/binary-status.new.$$"; mv "$STATE/binary-status.new.$$" "$STATE/binary-status"; }
 binary_path() {
-    external=$(get "$1" external)
-    if [ -n "$external" ]; then printf '%s\n' "$external"
-    elif [ "$(get "$1" storage)" = persistent ]; then printf '%s\n' "$CONFIG/bin/wstunnel"
+    if [ "$(get "$1" storage)" = persistent ]; then printf '%s\n' "$CONFIG/bin/wstunnel"
     else printf '%s\n' "$STATE/bin/wstunnel"; fi
 }
 # Bounded execution without requiring the timeout applet.
@@ -219,8 +209,7 @@ validate_binary() (
 )
 # Download helper is a child so supervisor shutdown can interrupt WAN waits.
 download() {
-    dg=$1; db=$(binary_path "$dg"); du=$(get "$dg" url)
-    [ -z "$(get "$dg" external)" ] || { phase 'external-binary-unavailable'; return 1; }
+    dg=$1; db=${2:-$(binary_path "$dg")}; du=$(get "$dg" url)
     url https "$du" || { phase 'missing-or-invalid-url'; return 1; }
     command -v curl >/dev/null 2>&1 || { phase 'curl-required-for-verified-https'; return 1; }
     private_dir "$(dirname "$db")"
@@ -312,47 +301,20 @@ process_requests() {
     set +f
     for request in "$STATE"/requests/*; do
         [ -f "$request" ] || continue
-        rid=${request##*/}; action=$(get "$request" action); requested=$(get "$request" name)
+        rid=${request##*/}; action=$(get "$request" action)
         rm -f "$request"
         scan_due=0
         if [ "$action" = shutdown ]; then respond "$rid" ok; manager_cleanup; fi
-        if [ "$action" = update ]; then
-            if [ -n "$(get "$active/global" external)" ]; then respond "$rid" 'error: external binaries cannot be updated'; continue; fi
-            terminate "$STATE/download-worker"; terminate "$STATE/download-child"
-            [ -z "$download_pid" ] || wait "$download_pid" 2>/dev/null
-            download_pid=; stop_workers
-            db=$(binary_path "$active/global"); private_dir "$(dirname "$db")"
-            free=$(df -Pk "$(dirname "$db")" | awk 'END {print $4}')
-            old_size=0; [ ! -f "$db" ] || old_size=$((($(wc -c < "$db")+1023)/1024))
-            needed=$(($(get "$active/global" max_kib)+$(get "$active/global" reserve_kib)))
-            if ! number "$free" || [ "$((free+old_size))" -lt "$needed" ]; then respond "$rid" 'error: insufficient space; binary retained'; continue; fi
-            rm -f "$db" "$db.part"; checked_binary=; download_due=0; download_delay=30; force_download=1
-            : > "$STATE/update-pending"
-            respond "$rid" ok; continue
-        fi
-        case "$action" in start|stop) ;; *) respond "$rid" 'error: invalid request'; continue;; esac
-        if [ "$action:$requested" = stop:all ]; then force_download=0; rm -f "$STATE/update-pending"; fi
-        if [ "$requested" != all ] && { ! valid_id "$requested" || [ ! -d "$active/$requested" ]; }; then respond "$rid" 'error: unknown applied tunnel'; continue; fi
-        for tunnel_dir in "$active"/*; do
-            [ -d "$tunnel_dir" ] || continue
-            name=${tunnel_dir##*/}; [ "$requested" = all ] || [ "$requested" = "$name" ] || continue
-            private_dir "$STATE/tunnels/$name"
-            printf '%s\n' "$action" > "$STATE/tunnels/$name/override"
-            [ "$action" != stop ] || stop_one "$name"
-        done
-        respond "$rid" ok
-    done
-    set -f
-}
-sync_preferences() {
-    set +f
-    for tunnel_dir in "$active"/*; do
-        [ -d "$tunnel_dir" ] || continue
-        name=${tunnel_dir##*/}; private_dir "$STATE/tunnels/$name"; work=$STATE/tunnels/$name
-        preference=$(get "$tunnel_dir/tunnel" enabled)
-        old_preference=$(head -n 1 "$work/preference" 2>/dev/null)
-        if [ -n "$old_preference" ] && [ "$preference" != "$old_preference" ]; then rm -f "$work/override"; fi
-        printf '%s\n' "$preference" > "$work/preference"
+        case "$action" in
+            pause)
+                paused=1
+                terminate "$STATE/download-worker"; terminate "$STATE/download-child"
+                [ -z "$download_pid" ] || wait "$download_pid" 2>/dev/null
+                download_pid=; stop_workers; checked_binary=
+                respond "$rid" ok;;
+            sync) paused=0; sync_request=$rid; scan_due=0;;
+            *) respond "$rid" 'error: invalid request';;
+        esac
     done
     set -f
 }
@@ -360,9 +322,7 @@ has_desired() (
     set +f
     for tunnel_dir in "$active"/*; do
         [ -d "$tunnel_dir" ] || continue
-        name=${tunnel_dir##*/}; override=$(head -n 1 "$STATE/tunnels/$name/override" 2>/dev/null)
-        [ "$override" != stop ] || continue
-        if [ "$override" = start ] || [ "$(get "$tunnel_dir/tunnel" enabled)" = 1 ]; then exit 0; fi
+        exit 0
     done
     exit 1
 )
@@ -377,21 +337,24 @@ reconcile() {
         [ -d "$tunnel_dir" ] || continue
         name=${tunnel_dir##*/}; work=$STATE/tunnels/$name
         [ -d "$work" ] || private_dir "$work"
-        override=$(head -n 1 "$work/override" 2>/dev/null)
-        if [ "$override" = stop ] || { [ "$override" != start ] && [ "$(get "$tunnel_dir/tunnel" enabled)" = 0 ]; }; then stop_one "$name"; continue; fi
         old=$(head -n 1 "$work/snapshot" 2>/dev/null)
         old_binary=$(head -n 1 "$work/binary" 2>/dev/null)
         if owned_alive "$work/worker" && [ "$old_binary" = "$executable" ] && cmp -s "$old/tunnel" "$tunnel_dir/tunnel" && cmp -s "$old/server" "$tunnel_dir/server"; then continue; fi
         stop_one "$name"
         printf '%s\n' "$tunnel_dir" > "$work/snapshot"
         printf '%s\n' "$executable" > "$work/binary"
+        rm -f "$work/status"
         "$SELF" _worker "$name" "$tunnel_dir" "$executable" </dev/null >/dev/null 2>&1 &
         worker_pid=$!; record_pid "$work/worker" "$worker_pid"
+        worker_wait=0
+        while [ ! -f "$work/status" ] && owned_alive "$work/worker" && [ "$worker_wait" -lt 5 ]; do
+            sleep 1; worker_wait=$((worker_wait+1))
+        done
     done
     set -f
 }
 prune_snapshots() (
-    # Serialize with apply, including the publish-pointer step. A mere lock
+    # Serialize with mutations, including publication and rollback. A mere lock
     # existence check races with a generation published during this iteration.
     LOCK=$STATE/config.lock
     mkdir "$LOCK" 2>/dev/null || exit 0
@@ -418,14 +381,12 @@ daemon() {
     terminate "$STATE/download-worker"; terminate "$STATE/download-child"
     rm -f "$STATE/download-worker" "$STATE/download-child"
     stop_workers
-    # Runtime overrides never survive a supervisor restart.
-    set +f; rm -f "$STATE"/tunnels/*/override; set -f
-    active=$(current); [ -d "$active" ] || fail 'Run apply before starting the daemon'
-    download_pid=; checked_binary=; download_due=0; download_delay=30; force_download=0; scan_due=0
-    [ ! -f "$STATE/update-pending" ] || force_download=1
+    active=$(current); [ -d "$active" ] || fail 'Missing configuration snapshot'
+    download_pid=; checked_binary=; download_due=0; download_delay=30; scan_due=0
+    paused=0; sync_request=
     cp "$active/global" "$STATE/active-global"
-    sync_preferences
     while :; do
+        process_requests
         latest=$(current)
         if [ "$latest" != "$active" ]; then
             active=$latest; scan_due=0
@@ -435,21 +396,20 @@ daemon() {
                 download_pid=; checked_binary=; download_due=0; download_delay=30
                 stop_workers; cp "$active/global" "$STATE/active-global"
             fi
-            sync_preferences
         fi
-        process_requests
+        if [ "$paused" = 1 ]; then sleep 1; continue; fi
         now=$(date +%s)
         if [ "$now" -lt "$scan_due" ]; then sleep 1; continue; fi
         scan_due=$((now+5))
         executable=$(binary_path "$active/global")
         if [ -n "$download_pid" ] && ! owned_alive "$STATE/download-worker"; then
             wait "$download_pid"; result=$?; download_pid=; rm -f "$STATE/download-worker"
-            if [ "$result" = 0 ]; then checked_binary=$executable; download_delay=30; download_due=0; force_download=0; rm -f "$STATE/update-pending"
+            if [ "$result" = 0 ]; then checked_binary=$executable; download_delay=30; download_due=0
             else
                 jitter=$((now%7)); download_due=$((now+download_delay+jitter)); download_delay=$((download_delay*2)); [ "$download_delay" -le 294 ] || download_delay=294
             fi
         fi
-        if ! has_desired && [ "$force_download" = 0 ]; then
+        if ! has_desired; then
             if [ -n "$download_pid" ]; then terminate "$STATE/download-worker"; terminate "$STATE/download-child"; wait "$download_pid" 2>/dev/null; download_pid=; fi
             stop_workers
             if [ -x "$executable" ]; then phase ready-idle; else phase idle; fi
@@ -468,6 +428,21 @@ daemon() {
                 download_pid=$!; record_pid "$STATE/download-worker" "$download_pid"
             fi
         fi
+        if [ -n "$sync_request" ]; then
+            sync_result=ok
+            if has_desired; then
+                if [ "$checked_binary" != "$executable" ]; then sync_result='error: binary unavailable; rerun setup'
+                else
+                    set +f
+                    for tunnel_dir in "$active"/*; do
+                        [ -d "$tunnel_dir" ] || continue
+                        owned_alive "$STATE/tunnels/${tunnel_dir##*/}/worker" && [ -f "$STATE/tunnels/${tunnel_dir##*/}/status" ] || sync_result='error: local worker failed to start'
+                    done
+                    set -f
+                fi
+            fi
+            respond "$sync_request" "$sync_result"; sync_request=
+        fi
         printf '%s\n' "$download_due" > "$STATE/next-download"
         prune_snapshots
         sleep 1
@@ -475,7 +450,7 @@ daemon() {
 }
 ensure_daemon() {
     owned_alive "$STATE/daemon" && return 0
-    [ -d "$(current)" ] || apply_config
+    [ -d "$(current)" ] || fail 'Run setup first'
     (trap '' HUP; exec "$SELF" daemon </dev/null >/dev/null 2>&1) &
     count=0
     while ! owned_alive "$STATE/daemon"; do count=$((count+1)); [ "$count" -lt 10 ] || fail 'Supervisor did not start'; sleep 1; done
@@ -503,6 +478,44 @@ send_request() {
     response=$(head -n 1 "$STATE/responses/$rid"); rm -f "$STATE/responses/$rid"
     [ "$response" = ok ] || fail "$response"
 }
+# Hold the configuration lock through publication and supervisor acknowledgment.
+# EXIT/signal rollback restores both the saved record and the published pointer.
+transaction_begin() {
+    tx_file=$1; tx_backup=$CONFIG/rollback.$$
+    tx_current=$(current); tx_binary=; tx_binary_backup=; tx_binary_changed=0; tx_binary_existed=0
+    tx_daemon_running=0; owned_alive "$STATE/daemon" && tx_daemon_running=1
+    tx_exists=0; [ ! -f "$tx_file" ] || { cp "$tx_file" "$tx_backup" || fail 'Cannot back up configuration'; tx_exists=1; }
+    trap 'transaction_rollback' EXIT
+    trap 'exit 130' INT TERM HUP
+}
+transaction_rollback() {
+    trap - EXIT INT TERM HUP
+    if [ "$tx_exists" = 1 ]; then mv "$tx_backup" "$tx_file"; else rm -f "$tx_file"; fi
+    if [ "$tx_binary_changed" = 1 ]; then
+        if [ -f "$tx_binary_backup" ]; then mv "$tx_binary_backup" "$tx_binary"
+        elif [ "$tx_binary_existed" = 0 ]; then rm -f "$tx_binary"; fi
+    fi
+    if [ -n "$tx_current" ]; then
+        printf '%s\n' "$tx_current" > "$CONFIG/current.rollback.$$"; mv "$CONFIG/current.rollback.$$" "$CONFIG/current"
+        if [ "$tx_daemon_running" = 1 ]; then
+            (trap - EXIT INT TERM HUP; ensure_daemon; send_request sync) >/dev/null 2>&1 || printf 'wtctl: rollback restored configuration; check supervisor status.\n' >&2
+        elif owned_alive "$STATE/daemon"; then (send_request shutdown) >/dev/null 2>&1 || :; fi
+    else
+        rm -f "$CONFIG/current"
+        if owned_alive "$STATE/daemon"; then (send_request shutdown) >/dev/null 2>&1 || :; fi
+    fi
+    rm -f "$CONFIG/global.new.$$" "$CONFIG/server.new.$$" "$CONFIG/tunnel.new.$$"
+    [ -z "$tx_binary" ] || rm -f "$tx_binary.candidate.$$" "$tx_binary.candidate.$$.part"
+    unlock
+}
+transaction_commit() {
+    publish_config || exit 1
+    ensure_daemon
+    (send_request sync) || fail 'Change failed; restoring previous working state'
+    rm -f "$tx_backup"
+    [ -z "$tx_binary_backup" ] || rm -f "$tx_binary_backup"
+    unlock; trap - EXIT INT TERM HUP
+}
 server_write() {
     operation=$1; name=$2; shift 2; valid_id "$name" || fail 'Invalid server name'
     lock config; trap 'unlock' EXIT
@@ -522,9 +535,10 @@ server_write() {
     temp=$CONFIG/server.new.$$
     { put endpoint "$endpoint"; put auth "$auth"; put prefix "$prefix"; put username "$username"; put password "$password"; put ca "$ca"; } > "$temp" || exit 1
     validate_server "$temp" || { rm -f "$temp"; fail 'Invalid server settings'; }
+    transaction_begin "$file"
     mv "$temp" "$file" || fail 'Cannot save server'
-    unlock; trap - EXIT
-    printf 'Server saved; run apply.\n'
+    transaction_commit
+    printf 'Server saved.\n'
 }
 read_secret_file() {
     # Accept a single line, with or without one terminal newline.
@@ -535,7 +549,7 @@ tunnel_write() {
     lock config; trap 'unlock' EXIT
     file=$CONFIG/tunnels/$name
     case "$operation" in add) [ ! -e "$file" ] || fail 'Tunnel already exists';; edit) [ -f "$file" ] || fail 'Unknown tunnel';; esac
-    server=; direction=forward; protocol=tcp; bind=127.0.0.1; listen=; target=; target_port=; enabled=0
+    server=; direction=forward; protocol=tcp; bind=127.0.0.1; listen=; target=; target_port=
     if [ "$operation" = edit ]; then validate_tunnel "$file" || fail 'Invalid existing tunnel'; fi
     while [ "$#" -gt 0 ]; do
         [ "$#" -ge 2 ] || fail 'Missing option value'
@@ -543,28 +557,12 @@ tunnel_write() {
         shift 2
     done
     temp=$CONFIG/tunnel.new.$$
-    { put server "$server"; put direction "$direction"; put protocol "$protocol"; put bind "$bind"; put listen "$listen"; put target "$target"; put port "$target_port"; put enabled "$enabled"; } > "$temp"
+    { put server "$server"; put direction "$direction"; put protocol "$protocol"; put bind "$bind"; put listen "$listen"; put target "$target"; put port "$target_port"; } > "$temp"
     validate_tunnel "$temp" && [ -f "$CONFIG/servers/$server" ] || { rm -f "$temp"; fail 'Invalid tunnel settings or unknown server'; }
+    transaction_begin "$file"
     mv "$temp" "$file" || fail 'Cannot save tunnel'
-    unlock; trap - EXIT
-    printf 'Tunnel saved; run apply.\n'
-}
-set_enabled() {
-    [ "$1" = all ] || valid_id "$1" || fail 'Invalid tunnel name'
-    lock config; trap 'unlock' EXIT
-    requested=$1; enabled_value=$2
-    [ "$requested" = all ] || [ -f "$CONFIG/tunnels/$requested" ] || fail 'Unknown tunnel'
-    set +f
-    for file in "$CONFIG"/tunnels/*; do
-        [ -f "$file" ] || continue
-        [ "$requested" = all ] || [ "${file##*/}" = "$requested" ] || continue
-        validate_tunnel "$file" || fail 'Invalid tunnel'
-        awk -v enabled="$enabled_value" '/^enabled=/ {$0="enabled=" enabled} {print}' "$file" > "$CONFIG/tunnel.new.$$" || fail 'Cannot write configuration'
-        mv "$CONFIG/tunnel.new.$$" "$file" || fail 'Cannot save configuration'
-    done
-    set -f
-    unlock; trap - EXIT
-    printf 'Startup preference saved; run apply.\n'
+    transaction_commit
+    printf 'Tunnel saved and started (connectivity is not verified).\n'
 }
 remove_record() {
     kind=$1; name=$2; valid_id "$name" || fail 'Invalid name'
@@ -575,28 +573,50 @@ remove_record() {
         for file in "$CONFIG"/tunnels/*; do [ -f "$file" ] || continue; [ "$(get "$file" server)" != "$name" ] || fail 'Server is referenced by a tunnel'; done
         set -f
     fi
-    rm -f "$CONFIG/$kind/$name"; unlock; trap - EXIT
-    printf 'Removed; run apply.\n'
+    transaction_begin "$CONFIG/$kind/$name"
+    rm -f "$tx_file"
+    transaction_commit
+    printf 'Removed.\n'
 }
-binary_configure() {
-    [ "$#" = 2 ] || fail 'Usage: binary configure ram|persistent HTTPS_URL'
+setup_binary() {
+    setup_storage=${1:-}; setup_url=${2:-}; setup_update=0
+    [ -z "$setup_url" ] || setup_update=1
+    if [ -z "$setup_storage" ]; then
+        setup_storage=$(get "$CONFIG/global" storage)
+        if [ -t 0 ] && [ -t 1 ]; then
+            printf 'Binary storage (current: %s)\n1 RAM\n2 Persistent\n0 Cancel\n' "$setup_storage"
+            choose 12 || return 1
+            case "$answer" in 1) setup_storage=ram;; 2) setup_storage=persistent;; 0) return 1;; esac
+        fi
+    fi
+    if [ -z "$setup_url" ]; then
+        setup_url=$(get "$CONFIG/global" url)
+        if [ -t 0 ] && [ -t 1 ]; then
+            ask 'HTTPS raw binary URL (empty to keep current): ' || return 1
+            if [ -n "$answer" ]; then setup_url=$answer; setup_update=1; fi
+        fi
+    fi
+    url https "$setup_url" || fail 'Setup requires an approved HTTPS raw binary URL'
     lock config; trap 'unlock' EXIT
-    { put format 1; put storage "$1"; put url "$2"; put external ''; put max_kib "$(get "$CONFIG/global" max_kib)"; put reserve_kib "$(get "$CONFIG/global" reserve_kib)"; } > "$CONFIG/global.new.$$"
-    validate_global "$CONFIG/global.new.$$" || { rm -f "$CONFIG/global.new.$$"; fail 'Invalid storage mode or HTTPS URL'; }
-    mv "$CONFIG/global.new.$$" "$CONFIG/global" || fail 'Cannot save binary configuration'
-    unlock; trap - EXIT
-    printf 'Binary settings saved; run apply.\n'
-}
-binary_use() {
-    [ "$#" = 1 ] && absolute "$1" || fail 'Supply an absolute executable path'
-    case "$1" in "$CONFIG"/*|"$STATE"/*) fail 'External executables must live outside manager-owned directories';; esac
-    validate_binary "$1" || fail 'Incompatible executable (raw native ELF and supported client CLI required)'
-    lock config; trap 'unlock' EXIT
-    { put format 1; put storage "$(get "$CONFIG/global" storage)"; put url ''; put external "$1"; put max_kib "$(get "$CONFIG/global" max_kib)"; put reserve_kib "$(get "$CONFIG/global" reserve_kib)"; } > "$CONFIG/global.new.$$"
-    validate_global "$CONFIG/global.new.$$" || { rm -f "$CONFIG/global.new.$$"; fail 'Invalid global settings'; }
-    mv "$CONFIG/global.new.$$" "$CONFIG/global" || fail 'Cannot save binary configuration'
-    unlock; trap - EXIT
-    printf 'External binary selected; run apply.\n'
+    validate_global "$CONFIG/global" || fail 'Invalid global configuration (no legacy migration supported)'
+    transaction_begin "$CONFIG/global"
+    { put format 2; put storage "$setup_storage"; put url "$setup_url"; put max_kib "$(get "$tx_file" max_kib)"; put reserve_kib "$(get "$tx_file" reserve_kib)"; } > "$CONFIG/global.new.$$"
+    validate_global "$CONFIG/global.new.$$" || fail 'Invalid storage mode or HTTPS URL'
+    tx_binary=$(binary_path "$CONFIG/global.new.$$"); tx_binary_backup=$tx_binary.previous.$$
+    if [ "$setup_update" = 1 ] || ! validate_binary "$tx_binary"; then
+        printf 'Downloading and validating candidate; existing tunnels stay running.\n'
+        (download "$CONFIG/global.new.$$" "$tx_binary.candidate.$$") || fail 'Download failed; existing binary and settings retained'
+        if owned_alive "$STATE/daemon"; then (send_request pause) || fail 'Cannot pause supervisor for activation'; fi
+        [ ! -f "$tx_binary" ] || tx_binary_existed=1
+        tx_binary_changed=1
+        [ "$tx_binary_existed" = 0 ] || mv "$tx_binary" "$tx_binary_backup" || fail 'Cannot back up binary'
+        mv "$tx_binary.candidate.$$" "$tx_binary" || fail 'Cannot activate candidate'
+    fi
+    mv "$CONFIG/global.new.$$" "$tx_file" || fail 'Cannot save binary settings'
+    setup_old_binary=$(binary_path "$tx_backup")
+    transaction_commit
+    [ "$setup_old_binary" = "$tx_binary" ] || rm -f "$setup_old_binary"
+    printf 'Binary ready; setup configuration saved.\n'
 }
 status() {
     daemon_state=stopped; owned_alive "$STATE/daemon" && daemon_state=running
@@ -604,6 +624,7 @@ status() {
     printf 'Download retry epoch: %s\n' "$(head -n 1 "$STATE/next-download" 2>/dev/null || printf 0)"
     printf '%-20s %-12s %-8s %-6s %-8s %s\n' TUNNEL STATE PID EXIT RESTARTS NEXT_RETRY
     active=$(current)
+    [ -d "$active" ] || active=$CONFIG/no-active-snapshot
     set +f
     for tunnel_dir in "$active"/*; do
         [ -d "$tunnel_dir" ] || continue
@@ -614,14 +635,14 @@ status() {
         printf '%-20s %-12s %-8s %-6s %-8s %s\n' "$name" "$state" "$pid" "$(get "$work/status" exit)" "$(get "$work/status" restarts)" "$(get "$work/status" next_retry)"
     done
     set -f
-    printf 'Process state only; connectivity is not verified. Edits need apply.\n'
+    printf 'Process state only; connectivity is not verified.\n'
 }
 list_records() {
     set +f
     for file in "$CONFIG/$1"/*; do
         [ -f "$file" ] || continue
         if [ "$1" = servers ]; then printf '%s auth=%s\n' "${file##*/}" "$(get "$file" auth)"
-        else printf '%s server=%s %s/%s enabled=%s\n' "${file##*/}" "$(get "$file" server)" "$(get "$file" direction)" "$(get "$file" protocol)" "$(get "$file" enabled)"; fi
+        else printf '%s server=%s %s/%s\n' "${file##*/}" "$(get "$file" server)" "$(get "$file" direction)" "$(get "$file" protocol)"; fi
     done
     set -f
 }
@@ -720,7 +741,7 @@ doctor() {
     distro=linux; [ ! -f /etc/openwrt_release ] || distro=openwrt
     printf 'Platform: %s (architecture alone does not guarantee ABI compatibility)\n' "$distro"
     missing=0
-    for utility in awk grep tr id ls chmod mkdir rm mv cp dirname basename date sleep head cmp dd wc df uname; do
+    for utility in awk grep tr id ls chmod mkdir rm mv cp dirname basename date sleep head cmp dd wc df uname cut; do
         if ! command -v "$utility" >/dev/null 2>&1; then printf 'Missing: %s\n' "$utility"; missing=1; fi
     done
     if ! command -v od >/dev/null 2>&1 && ! command -v hexdump >/dev/null 2>&1; then
@@ -737,68 +758,185 @@ doctor() {
     return "$missing"
 }
 ask() { printf '%s' "$1"; IFS= read -r answer || return 1; }
-confirm() { ask "$1 [y/N] " && case "$answer" in y|Y|yes) return 0;; esac; return 1; }
-wizard_server() (
-    ask 'Server name: ' || exit; name=$answer
-    operation=add; [ ! -f "$CONFIG/servers/$name" ] || operation=edit
-    ask 'WSS endpoint: ' || exit; endpoint=$answer
-    ask 'Authentication (none/path/basic) [none]: ' || exit; auth=${answer:-none}
+# POSIX single-byte input: never use nonportable read -n/-s.
+choose() {
+    allowed=$1
+    while :; do
+        choice_raw=0
+        if [ -t 0 ] && [ -t 1 ] && command -v stty >/dev/null 2>&1 && choice_terminal=$(stty -g 2>/dev/null); then
+            choice_pid=
+            trap '[ -z "$choice_pid" ] || kill "$choice_pid" 2>/dev/null; stty "$choice_terminal"; rm -f "$STATE/choice.$$" "$STATE/secret.$$"; exit 130' INT TERM HUP
+            trap 'stty "$choice_terminal"; rm -f "$STATE/choice.$$"' EXIT
+            if stty -icanon -echo min 1 time 0 2>/dev/null; then choice_raw=1
+            else stty "$choice_terminal"; trap - EXIT INT TERM HUP; fi
+        fi
+        if [ "$choice_raw" = 1 ]; then
+            # wait is interruptible; a foreground command substitution is not.
+            exec 3<&0
+            dd bs=1 count=1 <&3 > "$STATE/choice.$$" 2>/dev/null & choice_pid=$!
+            exec 3<&-
+            printf '> '
+            wait "$choice_pid"; choice_result=$?; choice_pid=
+            answer=$(head -n 1 "$STATE/choice.$$")
+            choice_data=0; [ ! -s "$STATE/choice.$$" ] || choice_data=1
+            rm -f "$STATE/choice.$$"
+            stty "$choice_terminal"
+            trap - EXIT INT TERM HUP
+            [ "$choice_result" = 0 ] && [ "$choice_data" = 1 ] || return 1
+            # Ctrl-D in noncanonical mode is a byte, not EOF.
+            [ "$answer" != "$(printf '\004')" ] || return 1
+            printf '%s\n' "$answer"
+        else
+            printf '> '
+            IFS= read -r answer || return 1
+        fi
+        answer=$(printf '%s' "$answer" | tr '[:upper:]' '[:lower:]')
+        case "$answer" in 0) return 0;; '') ;; *) case "$allowed" in *"$answer"*) [ ${#answer} = 1 ] && return 0;; esac;; esac
+        printf 'Choose one of the displayed keys.\n'
+    done
+}
+confirm() {
+    printf '%s\n1 Yes\n2 No\n0 Cancel\n' "$1"
+    choose 12 && [ "$answer" = 1 ]
+}
+select_record() {
+    record_kind=$1; record_ids=; record_keys=123456789abcdefghijklmnopqrstuvwxyz; record_count=0
+    set +f
+    for record_file in "$CONFIG/$record_kind"/*; do
+        [ -f "$record_file" ] || continue
+        record_ids="$record_ids ${record_file##*/}"; record_count=$((record_count+1))
+    done
+    set -f
+    [ "$record_count" -gt 0 ] || { printf 'No %s configured.\n' "$record_kind"; return 1; }
+    # IDs cannot contain whitespace; intentional splitting, globbing disabled.
+    # shellcheck disable=SC2086
+    set -- $record_ids
+    record_index=0
+    for record_id do
+        record_index=$((record_index+1))
+        if [ "$record_count" -le 35 ]; then record_key=$(printf '%s' "$record_keys" | cut -c "$record_index")
+        else record_key=$record_index; fi
+        printf '%s %s\n' "$record_key" "$record_id"
+    done
+    printf '0 Back\n'
+    if [ "$record_count" -le 35 ]; then
+        choose "$(printf '%s' "$record_keys" | cut -c "1-$record_count")" || return 1
+        [ "$answer" != 0 ] || return 1
+        record_index=$(awk -v keys="$record_keys" -v key="$answer" 'BEGIN {print index(keys,key)}')
+    else
+        printf 'More than 35 entries: enter the number followed by Enter.\n'
+        while :; do
+            ask '> ' || return 1
+            [ "$answer" != 0 ] || return 1
+            number "$answer" && [ "$answer" -ge 1 ] && [ "$answer" -le "$record_count" ] && break
+        done
+        record_index=$answer
+    fi
+    while [ "$record_index" -gt 1 ]; do shift; record_index=$((record_index-1)); done
+    selected=$1
+}
+ask_password() {
+    terminal=$(stty -g) || return 1
+    trap 'stty "$terminal"; rm -f "$STATE/secret.$$"' EXIT
+    trap 'exit 130' INT TERM HUP
+    stty -echo || return 1
+    ask 'Password: '; result=$?
+    stty "$terminal"; printf '\n'
+    trap - EXIT INT TERM HUP
+    return "$result"
+}
+wizard_server() {
+    name=${1:-}; operation=edit
+    if [ -z "$name" ]; then ask 'Server name: ' || return; name=$answer; operation=add; fi
+    ask 'WSS endpoint: ' || return; endpoint=$answer
+    printf 'Authentication\n1 None\n2 Path prefix\n3 Basic\n0 Cancel\n'
+    choose 123 || return
+    case "$answer" in 1) auth=none;; 2) auth=path;; 3) auth=basic;; 0) return;; esac
     set -- server "$operation" "$name" --endpoint "$endpoint" --auth "$auth"
     case "$auth" in
-        path) ask 'Path prefix: ' || exit; set -- "$@" --prefix "$answer";;
+        path) ask 'Path prefix: ' || return; set -- "$@" --prefix "$answer";;
         basic)
-            ask 'Username: ' || exit; set -- "$@" --username "$answer"
+            ask 'Username: ' || return; set -- "$@" --username "$answer"
             if command -v stty >/dev/null 2>&1; then
-                terminal=$(stty -g) || exit 1
-                trap 'stty "$terminal"; rm -f "$STATE/secret.$$"' EXIT
-                trap 'exit 130' INT TERM
-                stty -echo; ask 'Password: '; result=$?; stty "$terminal"; printf '\n'; [ "$result" = 0 ] || exit
+                ask_password || return
                 printf '%s' "$answer" > "$STATE/secret.$$"; set -- "$@" --password-file "$STATE/secret.$$"
+                trap 'rm -f "$STATE/secret.$$"' EXIT
+                trap 'exit 130' INT TERM HUP
             else
                 printf 'Hidden input unavailable (stty missing); supply an existing private file.\n'
-                ask 'One-line password file: ' || exit
+                ask 'One-line password file: ' || return
                 set -- "$@" --password-file "$answer"
             fi;;
     esac
-    ask 'Custom CA file (empty for system trust): ' || exit; set -- "$@" --ca "$answer"
-    "$SELF" "$@" || exit 1
+    ask 'Custom CA file (empty for system trust): ' || { rm -f "$STATE/secret.$$"; return; }
+    set -- "$@" --ca "$answer"
+    if [ "$operation" = edit ]; then
+        printf 'Saving restarts these affected tunnels:\n'
+        set +f
+        for affected in "$CONFIG"/tunnels/*; do
+            [ -f "$affected" ] || continue
+            [ "$(get "$affected" server)" != "$name" ] || printf '  %s\n' "${affected##*/}"
+        done
+        set -f
+    fi
+    if confirm 'Save server?'; then
+        trap 'rm -f "$STATE/secret.$$"' EXIT
+        trap 'exit 130' INT TERM HUP
+        "$SELF" "$@"
+    fi
     rm -f "$STATE/secret.$$"
-)
-wizard_tunnel() (
-    ask 'Tunnel name: ' || exit; name=$answer
-    operation=add; [ ! -f "$CONFIG/tunnels/$name" ] || operation=edit
-    ask 'Server profile: ' || exit; set -- tunnel "$operation" "$name" --server "$answer"
-    ask 'Direction (forward/reverse) [forward]: ' || exit; set -- "$@" --direction "${answer:-forward}"
-    ask 'Protocol (tcp/udp) [tcp]: ' || exit; set -- "$@" --protocol "${answer:-tcp}"
-    ask 'Bind address [127.0.0.1]: ' || exit; set -- "$@" --bind "${answer:-127.0.0.1}"
-    ask 'Listen port: ' || exit; set -- "$@" --listen "$answer"
-    ask 'Target host: ' || exit; set -- "$@" --target "$answer"
-    ask 'Target port: ' || exit; set -- "$@" --port "$answer"
-    "$SELF" "$@" || exit
-    confirm 'Enable at supervisor startup?' && "$SELF" enable "$name"
-    exit 0
-)
+    trap - EXIT INT TERM HUP
+}
+wizard_tunnel() {
+    name=${1:-}; operation=edit
+    if [ -z "$name" ]; then ask 'Tunnel name: ' || return; name=$answer; operation=add; fi
+    printf 'Server profile\n'
+    select_record servers || return
+    set -- tunnel "$operation" "$name" --server "$selected"
+    printf 'Direction\n1 Forward\n2 Reverse\n0 Cancel\n'
+    choose 12 || return
+    case "$answer" in 1) direction=forward;; 2) direction=reverse;; 0) return;; esac
+    set -- "$@" --direction "$direction"
+    printf 'Protocol\n1 TCP\n2 UDP\n0 Cancel\n'
+    choose 12 || return
+    case "$answer" in 1) protocol=tcp;; 2) protocol=udp;; 0) return;; esac
+    set -- "$@" --protocol "$protocol"
+    ask 'Bind address [127.0.0.1]: ' || return; set -- "$@" --bind "${answer:-127.0.0.1}"
+    ask 'Listen port: ' || return; set -- "$@" --listen "$answer"
+    ask 'Target host: ' || return; set -- "$@" --target "$answer"
+    ask 'Target port: ' || return; set -- "$@" --port "$answer"
+    confirm 'Save and start tunnel (also starts at boot)?' && "$SELF" "$@"
+    return 0
+}
 menu() {
     [ -t 0 ] && [ -t 1 ] || fail 'Interactive menu requires a terminal'
     while :; do
-        printf '\nwtctl\n1 Status\n2 Servers\n3 Tunnels\n4 Binary\n5 Apply\n6 Start/stop\n7 Doctor\n8 Startup integration\n0 Quit\n'
-        ask '> ' || return
+        printf '\nwtctl\n1 Status\n2 Servers\n3 Tunnels\n4 Doctor\n0 Quit\n'
+        choose 1234 || return 0
         case "$answer" in
-            0) return;; 1) "$SELF" status;;
-            2) "$SELF" server list; ask 'Action (add/edit/remove/back): ' || return; action=$answer
-                case "$action" in add|edit) wizard_server && confirm 'Apply now?' && "$SELF" apply;; remove) ask 'Server name: ' || return; name=$answer; if confirm "Remove $name?"; then "$SELF" server remove "$name"; confirm 'Apply now?' && "$SELF" apply; fi;; esac;;
-            3) "$SELF" tunnel list; ask 'Action (add/edit/enable/disable/remove/back): ' || return; action=$answer
-                case "$action" in add|edit) wizard_tunnel && confirm 'Apply now?' && "$SELF" apply;; enable|disable|remove) ask 'Tunnel name: ' || return; name=$answer; if [ "$action" != remove ] || confirm "Remove $name?"; then case "$action" in remove) "$SELF" tunnel remove "$name";; *) "$SELF" "$action" "$name";; esac; confirm 'Apply now?' && "$SELF" apply; fi;; esac;;
-            4) ask 'Action (configure/use/install/update/back): ' || return
-                case "$answer" in
-                    configure) ask 'Storage (ram/persistent) [ram]: ' || return; storage=${answer:-ram}; ask 'HTTPS raw binary URL: ' || return; "$SELF" binary configure "$storage" "$answer"; confirm 'Apply now?' && "$SELF" apply;;
-                    use) ask 'Absolute binary path: ' && "$SELF" binary use "$answer"; confirm 'Apply now?' && "$SELF" apply;;
-                    install|update) action=$answer; confirm 'Stop tunnels and delete the managed binary? No rollback.' && "$SELF" binary "$action" --yes;;
-                esac;;
-            5) "$SELF" apply;;
-            6) ask 'Action (start/stop): ' || return; action=$answer; case "$action" in start|stop) ask 'Tunnel name or all [all]: ' && "$SELF" "$action" "${answer:-all}";; esac;;
-            7) "$SELF" doctor;;
-            8) ask 'Adapter (openwrt/systemd/sysv): ' || return; adapter=$answer; confirm 'Install and enable startup integration?' && "$SELF" startup install "$adapter" --yes;;
+            0) return;; 1) "$SELF" status;; 4) "$SELF" doctor;;
+            2|3)
+                kind=servers; [ "$answer" != 3 ] || kind=tunnels
+                records_menu "$kind";;
+        esac
+    done
+}
+records_menu() {
+    kind=$1
+    while :; do
+        printf '\n%s\n' "$kind"
+        list_records "$kind"
+        printf '1 Add\n2 Edit\n3 Remove\n0 Back\n'
+        choose 123 || return 0
+        record_action=$answer
+        case "$record_action" in
+            0) return;;
+            1) if [ "$kind" = servers ]; then wizard_server; else wizard_tunnel; fi;;
+            2|3)
+                select_record "$kind" || continue
+                if [ "$record_action" = 2 ]; then
+                    if [ "$kind" = servers ]; then wizard_server "$selected"; else wizard_tunnel "$selected"; fi
+                elif confirm "Remove $selected?"; then "$SELF" "${kind%s}" remove "$selected"; fi;;
         esac
     done
 }
@@ -808,8 +946,27 @@ register_startup() {
         systemd) systemctl daemon-reload; systemctl enable wtctl || fail 'Could not enable service';;
         sysv)
             if command -v update-rc.d >/dev/null 2>&1; then update-rc.d wtctl defaults || fail 'Could not register startup'
-            else printf 'Hook installed. Register it using your init system; no universal BusyBox boot hook exists.\n'; fi;;
+            else fail 'SysV boot registration requires update-rc.d; provide a supported init system'; fi;;
     esac
+}
+check_startup() {
+    case "$1" in
+        openwrt)
+            target=/etc/init.d/wtctl; expected='^USE_PROCD=1$'
+            [ -f /etc/rc.common ] && [ -f /etc/openwrt_release ] || fail 'OpenWrt rc.common is required';;
+        systemd)
+            target=/etc/systemd/system/wtctl.service; expected='^ExecStart=/usr/sbin/wtctl daemon$'
+            command -v systemctl >/dev/null 2>&1 || fail 'systemctl missing';;
+        sysv)
+            target=/etc/init.d/wtctl; expected='^# Default-Start: 2 3 4 5$'
+            command -v update-rc.d >/dev/null 2>&1 || fail 'SysV boot registration requires update-rc.d';;
+        *) fail 'Choose openwrt, systemd or sysv';;
+    esac
+    safe_path "$target"
+    [ -d "$(dirname "$target")" ] || fail 'Startup directory is missing'
+    if [ -e "$target" ]; then
+        [ -f "$target" ] && grep -q '^# Managed by wtctl$' "$target" && grep -q "$expected" "$target" || fail 'Not a matching managed startup file'
+    fi
 }
 startup() {
     action=$1; adapter=$2; approval=${3:-}
@@ -876,27 +1033,25 @@ startup() {
 }
 help() {
     printf '%s\n' "wtctl $VERSION — wstunnel client manager" \
-        '  init | doctor | menu | status | apply' \
+        '  doctor | menu | status' \
         '  server add|edit NAME --endpoint wss://HOST [--auth none|path|basic]' \
         '      [--prefix VALUE] [--username USER --password-file FILE] [--ca FILE]' \
         '  server list | server remove NAME' \
         '  tunnel add|edit NAME --server NAME --listen PORT --target HOST --port PORT' \
         '      [--direction forward|reverse] [--protocol tcp|udp] [--bind ADDRESS]' \
-        '  tunnel list | tunnel remove NAME | enable NAME|all | disable NAME|all' \
-        '  binary configure ram|persistent HTTPS_URL | binary use /absolute/path' \
-        '  binary install|update --yes   (destructive, no rollback; async retries)' \
-        '  start [NAME|all] | stop [NAME|all] | shutdown | daemon [--background]' \
+        '  tunnel list | tunnel remove NAME' \
+        '  shutdown | daemon [--background]  (service plumbing)'  \
         '  startup install|enable|remove openwrt|systemd|sysv --yes' \
         '  uninstall [--purge] --yes  (remove startup integration first)' \
-        'Configuration edits require apply. New tunnels are disabled by default.'
+        'Changes apply automatically. Every saved tunnel starts now and at boot.' \
+        'Install/update/configure the binary by rerunning scripts/install.sh.'
 }
 command=${1:-}; [ "$#" = 0 ] || shift
 case "$command" in --help|-h|help) help; exit;; --version) printf '%s\n' "$VERSION"; exit;; doctor) doctor; exit $?;; esac
 prepare
 case "$command" in
     '') if [ -t 0 ] && [ -t 1 ]; then menu; else help; fi;;
-    init) printf 'Initialized %s; runtime %s\n' "$CONFIG" "$STATE";;
-    menu) menu;; status) status;; apply) apply_config;;
+    menu) menu;; status) status;;
     server|tunnel)
         [ "$#" -ge 1 ] || fail 'Specify add, edit, remove or list'
         kind=$command; action=$1; shift
@@ -906,19 +1061,24 @@ case "$command" in
             remove) [ "$#" = 1 ] || fail 'Supply one name'; remove_record "${kind}s" "$1";;
             *) fail 'Unknown record action';;
         esac;;
-    enable|disable) [ "$#" = 1 ] || fail 'Supply one tunnel name or all'; enabled_value=0; [ "$command" != enable ] || enabled_value=1; set_enabled "$1" "$enabled_value";;
-    binary)
-        [ "$#" -ge 1 ] || fail 'Specify configure, use, install or update'; action=$1; shift
-        case "$action" in
-            configure) binary_configure "$@";; use) binary_use "$@";;
-            install|update) [ "$#" = 1 ] && [ "$1" = --yes ] || fail 'Destructive binary operation requires --yes'; ensure_daemon; send_request update; printf 'Update queued; use status. Recovery retries while tunnels are wanted.\n';;
-            *) fail 'Unknown binary action';;
-        esac;;
-    start) [ "$#" -le 1 ] || fail 'Supply at most one tunnel name'; ensure_daemon; send_request start "${1:-all}";;
-    stop) [ "$#" -le 1 ] || fail 'Supply at most one tunnel name'; if owned_alive "$STATE/daemon"; then send_request stop "${1:-all}"; else stop_workers; fi;;
+
     shutdown) if owned_alive "$STATE/daemon"; then send_request shutdown; fi; count=0; while owned_alive "$STATE/daemon" && [ "$count" -lt 30 ]; do sleep 1; count=$((count+1)); done; owned_alive "$STATE/daemon" && fail 'Shutdown did not finish'; exit 0;;
-    daemon) case "$*" in '') [ -d "$(current)" ] || apply_config; daemon;; --background) ensure_daemon;; *) fail 'Usage: daemon [--background]';; esac;;
+    daemon) case "$*" in '') validate_config || exit 1; daemon;; --background) ensure_daemon;; *) fail 'Usage: daemon [--background]';; esac;;
     _worker) worker "$@";; _download) download "$@";;
+    _setup) [ "$#" = 2 ] || fail 'Setup is invoked by scripts/install.sh'; setup_binary "$@";;
+    _ready)
+        count=0
+        while ! owned_alive "$STATE/daemon"; do
+            count=$((count+1)); [ "$count" -lt 15 ] || fail 'Service did not start the supervisor'; sleep 1
+        done
+        send_request sync;;
+    _check-startup) [ "$#" = 1 ] || fail 'Missing setup adapter'; check_startup "$1";;
+    _adapter)
+        [ "$#" = 1 ] && absolute "$1" && [ -f "$1" ] && [ ! -L "$1" ] || fail 'Invalid setup handoff'
+        adapter_file=$1
+        printf 'Boot adapter\n1 OpenWrt\n2 systemd\n3 SysV (update-rc.d required)\n0 Cancel\n'
+        choose 123 || exit 1
+        case "$answer" in 1) printf 'openwrt\n' > "$adapter_file";; 2) printf 'systemd\n' > "$adapter_file";; 3) printf 'sysv\n' > "$adapter_file";; 0) exit 1;; esac;;
     startup) [ "$#" = 3 ] || fail 'Usage: startup install|enable|remove ADAPTER --yes'; case "$1" in install|enable|remove) startup "$@";; *) fail 'Unknown startup action';; esac;;
     uninstall)
         purge=0; case "$*" in --yes) ;; '--purge --yes'|'--yes --purge') purge=1;; *) fail 'Usage: uninstall [--purge] --yes';; esac

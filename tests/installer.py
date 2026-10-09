@@ -1,48 +1,20 @@
-"""Installer opt-in tests through a real PTY and unattended command lines.
-
-Run only in the disposable fixture container after tests/startup.sh sets up
-its OpenWrt/init-system shims. Never run against a host installation.
-"""
-import os
+"""Unified setup tests. Disposable fixture container ONLY, with init shims."""
 from pathlib import Path
+import os
 import pty
 import select
 import subprocess
+import termios
 import time
+
+INSTALL = ['sh', '/work/scripts/install.sh', '--yes']
+URL = 'https://localhost:18888/binary'
 
 
 def command(*args, success=True):
-    result = subprocess.run(args, capture_output=True, timeout=20)
-    assert (result.returncode == 0) == success, result.stderr.decode()
+    result = subprocess.run(args, capture_output=True, timeout=90)
+    assert (result.returncode == 0) == success, (result.stdout.decode(), result.stderr.decode())
     return result.stdout
-
-
-def interactive(answer):
-    master, slave = pty.openpty()
-    process = subprocess.Popen(['sh', '/work/scripts/install.sh', '--yes'],
-                               stdin=slave, stdout=slave, stderr=slave)
-    os.close(slave)
-    output = bytearray()
-    prompt = b'Enable wtctl at boot using openwrt? [y/N] '
-    try:
-        deadline = time.monotonic() + 15
-        while prompt not in output:
-            assert time.monotonic() < deadline, 'installer did not offer boot autostart'
-            ready, _, _ = select.select([master], [], [], 0.2)
-            if ready:
-                try:
-                    data = os.read(master, 4096)
-                except OSError:
-                    data = b''
-                assert data, 'installer exited without offering boot autostart'
-                output.extend(data)
-        os.write(master, answer.encode() + b'\n')
-        assert process.wait(timeout=15) == 0, bytes(output)
-    finally:
-        if process.poll() is None:
-            process.kill()
-            process.wait(timeout=5)
-        os.close(master)
 
 
 def cleanup():
@@ -52,40 +24,76 @@ def cleanup():
         command('/usr/sbin/wtctl', 'uninstall', '--purge', '--yes')
 
 
-try:
-    interactive('')
-    assert not Path('/etc/init.d/wtctl').exists(), 'default enabled startup without consent'
-    assert b'Boot integration: not installed' in command('/usr/sbin/wtctl', 'doctor')
-    cleanup()
+def interactive():
+    master, slave = pty.openpty()
+    original = termios.tcgetattr(slave)
+    process = subprocess.Popen(INSTALL, stdin=slave, stdout=slave, stderr=slave)
+    pending = bytearray()
+    try:
+        for prompt, value in [(b'0 Cancel\r\n> ', b'1'),
+                              (b'HTTPS raw binary URL (empty to keep current): ', URL.encode() + b'\n')]:
+            deadline = time.monotonic() + 20
+            while prompt not in pending:
+                assert time.monotonic() < deadline, bytes(pending)
+                ready, _, _ = select.select([master], [], [], .2)
+                if ready:
+                    data = os.read(master, 4096)
+                    assert data
+                    pending.extend(data)
+            del pending[:pending.index(prompt) + len(prompt)]
+            os.write(master, value)
+        # Drain output while waiting to avoid PTY buffer deadlocks.
+        deadline = time.monotonic() + 90
+        while process.poll() is None:
+            assert time.monotonic() < deadline, bytes(pending)
+            ready, _, _ = select.select([master], [], [], .2)
+            if ready:
+                try:
+                    pending.extend(os.read(master, 4096))
+                except OSError:
+                    break
+        assert process.wait(timeout=10) == 0, bytes(pending)
+        assert termios.tcgetattr(slave) == original
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=10)
+        os.close(master)
+        os.close(slave)
 
-    interactive('yes')
-    assert b'Boot integration: openwrt' in command('/usr/sbin/wtctl', 'doctor')
+
+try:
+    interactive()
     assert Path('/test/boot-enabled').exists()
-    assert b'Supervisor: stopped' in command('/usr/sbin/wtctl', 'status'), 'installer started service now'
+    assert Path('/tmp/wtctl/bin/wstunnel').exists()
+    assert b'Supervisor: running' in command('/usr/sbin/wtctl', 'status')
+    command('/usr/sbin/wtctl', 'server', 'add', 'keep', '--endpoint', 'wss://example.com')
+    command('/usr/sbin/wtctl', 'tunnel', 'add', 'keep', '--server', 'keep', '--listen', '19333', '--target', 'localhost', '--port', '80')
     original = Path('/etc/init.d/wtctl').read_bytes()
     command('/etc/init.d/wtctl', 'disable')
-    interactive('y')
-    assert Path('/test/boot-enabled').exists(), 'existing disabled adapter was not re-enabled'
-    assert Path('/etc/init.d/wtctl').read_bytes() == original, 'existing adapter overwritten'
-    interactive('n')
-    assert Path('/test/boot-enabled').exists(), 'declining changed existing startup preference'
+    command(*INSTALL)
+    assert Path('/test/boot-enabled').exists(), 'rerun did not ensure boot startup'
+    assert Path('/etc/init.d/wtctl').read_bytes() == original
+    assert Path('/etc/wtctl/tunnels/keep').exists(), 'rerun lost tunnels'
+    assert b'keep' in command('/usr/sbin/wtctl', 'status')
+    old_binary = Path('/tmp/wtctl/bin/wstunnel').read_bytes()
+    old_global = Path('/etc/wtctl/global').read_bytes()
+    old_script = Path('/usr/sbin/wtctl').read_bytes()
+    command(*INSTALL, '--url', 'https://localhost:18888/bad', success=False)
+    assert Path('/tmp/wtctl/bin/wstunnel').read_bytes() == old_binary
+    assert Path('/etc/wtctl/global').read_bytes() == old_global
+    assert Path('/usr/sbin/wtctl').read_bytes() == old_script
+    assert b'Supervisor: running' in command('/usr/sbin/wtctl', 'status')
+    command(*INSTALL, '--url', URL, '--storage', 'persistent')
+    assert Path('/etc/wtctl/bin/wstunnel').exists()
+    assert Path('/etc/wtctl/tunnels/keep').exists()
     cleanup()
-
-    output = command('sh', '/work/scripts/install.sh', '--yes', '--startup', 'openwrt')
-    assert b'[y/N]' not in output and Path('/test/boot-enabled').exists()
-    command('sh', '/work/scripts/install.sh', '--yes', '--startup', 'openwrt')
-    assert Path('/test/boot-enabled').exists(), 'explicit option is not idempotent'
-    command('sh', '/work/scripts/install.sh', '--yes', '--no-startup')
-    assert Path('/test/boot-enabled').exists(), '--no-startup disabled existing integration'
-    cleanup()
-
-    command('sh', '/work/scripts/install.sh', '--yes', '--no-startup', '--startup', 'openwrt', success=False)
-    assert not Path('/usr/sbin/wtctl').exists(), 'invalid options modified installation'
-    command('sh', '/work/scripts/install.sh', '--yes', '--startup', 'unsupported', success=False)
+    command(*INSTALL, '--startup', 'unsupported', success=False)
+    command(*INSTALL, '--no-startup', success=False)
     assert not Path('/usr/sbin/wtctl').exists()
-    command('sh', '/work/scripts/install.sh', '--yes', '--no-startup')
-    assert not Path('/etc/init.d/wtctl').exists()
-    command('/usr/sbin/wtctl', 'uninstall', '--purge', '--yes')
-    print('Installer PTY consent/default/re-enable and unattended options passed.')
+    command(*INSTALL, '--url', URL, '--storage', 'ram', '--startup', 'openwrt')
+    assert Path('/test/boot-enabled').exists()
+    assert b'Supervisor: running' in command('/usr/sbin/wtctl', 'status')
+    print('Unified setup PTY/unattended, boot/start, rerun preservation, update rollback passed.')
 finally:
     cleanup()

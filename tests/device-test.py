@@ -61,6 +61,8 @@ started = False
 modified = False
 original_running = False
 script = args.script.read_bytes()
+if b'\nVERSION=0.1.0\n' not in script:
+    parser.error('Historical 0.1.0 harness: incompatible with 0.2.0 automatic lifecycle; no device changes performed')
 
 
 def ssh(command, *, data=None, timeout=120):
@@ -245,6 +247,9 @@ printf 'tmp '; df -Pk /tmp | awk 'END {print $4}'""").decode()
             rows[fields[0]] = int(fields[1])
     return rows
 
+
+if ssh('wtctl --version').strip() != b'0.1.0':
+    parser.error('Historical 0.1.0 harness: incompatible installed manager; no device changes performed')
 
 try:
     board = json.loads(ssh("ubus call system board"))

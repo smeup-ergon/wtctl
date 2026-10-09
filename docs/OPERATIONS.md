@@ -1,107 +1,93 @@
-# Installation and operation
+# Installation and operation (0.2.0)
 
-## OpenWrt-first deployment
+## Deployment
 
-1. Do not flash firmware, replace vendor feeds, or remove packages to make space.
-2. Copy the portable release to the router over an existing authenticated admin
-   channel. Run `sh scripts/install.sh --yes` as root. On a terminal, the installer
-   offers boot autostart (default No). Accepting installs/enables the detected
-   adapter without starting the service now; declining preserves existing boot
-   preferences. Without a terminal it makes no boot changes unless you explicitly
-   pass `--startup openwrt` (or `systemd`/`sysv`). Use `--no-startup` to suppress
-   the prompt and leave registration unchanged.
-3. Run `wtctl doctor`. Local-binary use needs only the documented shell/applet
-   baseline and `/proc`. Downloads need curl HTTPS and CA trust; any package
-   installation remains an explicit administrator decision.
-4. Choose a tested raw wstunnel build for the device's architecture, endianness,
-   ISA and ABI. The earlier project tested v11.0.0 on GL-AR300M MIPS32r2 musl
-   soft-float; that **does not qualify this new manager**.
-5. Run `wtctl` for guided setup or use the README's command sequence. Choose
-   RAM storage when flash cannot accommodate the binary and reserve. Default
-   download allowance is 24 MiB plus 1 MiB; reduce `max_kib` manually only if
-   the chosen raw binary is known to fit. There is no automatic storage choice.
-6. `wtctl apply`, then `wtctl daemon --background`. Verify real traffic from
-   both ends; process status alone is insufficient.
-7. If you skipped installer autostart, `wtctl startup enable openwrt --yes`
-   installs procd startup at priority 99 or re-enables the existing managed
-   adapter without rewriting it. It enables future boot startup but does not
-   start the service now. `wtctl doctor` verifies the registration links. After
-   stopping a manually launched supervisor with `wtctl shutdown`, run
-   `/etc/init.d/wtctl start` to let procd own it. Do not leave two supervisors
-   competing for ownership.
-8. Verify recovery after reboot, WAN loss and subsequent WAN restoration before
-   treating the release as operationally accepted.
+1. Do not flash firmware, replace feeds or remove packages to make room.
+2. Provision curl HTTPS and CA trust explicitly. Run `./wtctl doctor` to inspect
+   the shell/applet baseline and mounted `/proc`; it never installs dependencies.
+3. Select a trusted raw executable matching CPU, endianness, ISA and ABI/libc.
+   A matching ELF header does not establish complete compatibility.
+4. Copy the release directory through an authenticated administrator channel.
+   Run `sh scripts/install.sh --yes` as root; numbered setup selects RAM or
+   persistent storage and accepts the approved HTTPS raw-executable URL.
+   Unattended equivalent:
 
-The portable manager never invokes UCI/ubus. The OpenWrt boot adapter naturally
-requires OpenWrt's existing rc.common/procd, not additional manager runtime
-packages. Installing it on a non-OpenWrt distro is rejected.
+   ```sh
+   sh scripts/install.sh --yes --storage ram --url 'https://HOST/RAW_BINARY' --startup openwrt
+   ```
 
-## Other init systems
+5. Setup downloads/validates, enables boot startup and starts the service. It
+   detects OpenWrt, running systemd or SysV with update-rc.d. Choose an adapter
+   explicitly with --startup if needed. Unsupported automatic boot registration
+   fails; no false claim of autostart. Default paths are required.
+6. Run `wtctl` for server/tunnel management. All choices are keyed; text input
+   is only for values. Every saved tunnel starts now and at boot, without apply
+   or enable commands. Verify real traffic at both ends.
+7. Validate actual reboot, WAN-loss recovery and storage limits on the approved
+   device before operational acceptance. Correct TLS clock/CA trust is essential
+   for RAM redownload at boot. No automatic firewall/authorization changes occur.
 
-- `wtctl startup enable systemd --yes`; subsequently stop any manually launched
-  supervisor and `systemctl start wtctl`. systemd restarts the manager and
-  controls its process group.
-- `wtctl startup enable sysv --yes` creates or re-enables `/etc/init.d/wtctl`. It registers
-  with `update-rc.d` where available; otherwise register the start/stop hook
-  using the distribution's documented boot mechanism. Start calls
-  `wtctl daemon --background`, preserving disabled tunnel preferences.
-- Unsupported init: launch `/usr/sbin/wtctl daemon` in your init system's
-  foreground-service mechanism. Do not use `start all` as a boot command:
-  it explicitly starts disabled tunnels too.
+Non-loopback binds expose listeners. For reverse mode this exposure is on the
+remote server; secure that server yourself. The default bind is loopback.
 
-Adapters never overwrite an existing startup file. Remove only files bearing
-the manager marker. They support the default executable/config/runtime paths.
+## Updating
 
-## Current physical test status
+Rerun the release's installation script. Omitted URL reuses the current source
+and compatible executable; an explicit --url always downloads a candidate.
+Storage selection preserves the current mode if omitted unattended. Existing
+server/tunnel records remain intact. Candidate validation runs as root.
 
-The owner-approved GL-AR300M test device now runs wtctl with RAM storage and
-procd startup enabled, with no tunnel profiles. Native control/TCP/download
-checks, software reboot, owner-operated physical power-cycle and true WAN
-recovery at boot/during operation passed. A 30-minute concurrent TCP load and
-simulated printer-like stream also passed. Intermittent reverse-UDP loss remains
-unresolved; matched managed/direct trials passed without isolating its cause.
-Real printer behavior and arbitrary capacity are not qualified. See
-[physical evidence](PHYSICAL-TESTS.md).
+```sh
+sh scripts/install.sh --yes --url 'https://HOST/NEW_RAW_BINARY'
+```
 
-When procd/systemd owns the supervisor, use its service stop command to prevent
-respawn. Direct `wtctl shutdown` stops the process but does not disable an init
-watchdog; it is safe to repeat while that process is already terminating.
+Downloads leave working clients undisturbed. Activation briefly pauses them and
+keeps a rollback executable until local startup is acknowledged. Failed download
+or validation restores settings without deleting the working executable. Space
+must accommodate both retained executable and bounded candidate plus reserve.
+An interruption by SIGKILL/power loss is not a crash-atomic transaction guarantee.
+Startup registration/service-start errors are reported; inspect doctor/status
+rather than assuming successful setup from partial output.
 
-## Troubleshooting without tunnel logs
+## Maintenance and troubleshooting
 
-- `wtctl doctor`: utilities, platform, optional downloader/secret-input tools and
-  boot registration. It inspects marked OpenWrt/SysV files and registration links
-  without executing init scripts. systemd uses read-only `systemctl is-enabled`.
-  Missing tools/permissions are reported as unknown; unmanaged paths are not
-  executed. SysV start-link discovery does not establish the default runlevel,
-  and arbitrary manually configured boot hooks cannot be reliably detected.
-  Boot registration is not the supervisor's current running state.
-- `wtctl status`: supervisor, binary phase, child state, last exit, restart count,
-  epoch retry time. `date -d @EPOCH` is optional and not required by the manager.
-- `download-failed`: check WAN, DNS, HTTPS URL, device clock, CA trust and storage.
-- `incompatible-binary`: use a raw native executable with the required v11 client
-  options; class/machine checks cannot prove float ABI/ISA compatibility.
-- `insufficient-space`: choose RAM or adjust a known-safe budget; do not bypass
-  firmware/vendor safeguards.
-- Process backoff: check profile settings, listener conflicts, remote server
-  authorization and real traffic. A living process can still be disconnected.
-- `stop all` cancels binary retries. `start NAME` resumes wanted operation.
-- Saved changes do nothing until `apply`. A new supervisor restores enabled
-  tunnels only, not previous temporary starts/stops.
+- `wtctl doctor`: platform, utilities, download/secret capabilities and boot
+  registration. Unmanaged paths are not executed; missing query tools or
+  inaccessible data report unknown. Boot registration is not traffic health.
+- `wtctl status`: supervisor/binary phase, child state/PID, last exit, restart
+  count and retry epoch. Counters are per-worker lifetime, not persistent history.
+- Missing RAM binaries retry while at least one tunnel exists. Downloads use
+  verified HTTPS-only redirects and bounded exponential backoff indefinitely.
+- `download-failed`: check WAN, DNS, source URL, clock, CA trust and space.
+- `incompatible-binary`: use a raw native supported-client executable; class and
+  machine checks do not prove ISA/ABI compatibility.
+- Process backoff: check listener conflicts, server authorization and endpoint
+  connectivity. Client failures retain the configuration and retry.
+- Local worker-start or configuration validation failures roll back the edit.
+  A running worker does not guarantee client socket binding or successful traffic.
+- Editing a shared server automatically restarts all referencing tunnels;
+  other tunnels remain running. In-use servers cannot be deleted.
+- Remove a tunnel to stop it permanently. No disabled records or temporary stops.
+- For global maintenance, stop the owning service (`/etc/init.d/wtctl stop` or
+  `systemctl stop wtctl`), then start it again when ready. `wtctl shutdown` alone
+  can be undone by an init watchdog. Concurrent shutdown is idempotent.
 
-No automatic firewall or remote-server authorization changes are made. A
-reverse non-loopback bind can expose a remote service; secure the server yourself.
+## Uninstall
 
-## Update and uninstall
+```sh
+wtctl startup remove openwrt --yes  # use the adapter installed by setup
+wtctl uninstall --yes
+```
 
-`binary configure ...` saves settings; apply them explicitly. Existing binaries
-are reused until `binary update --yes` deletes them. That operation can cause
-indefinite downtime if the source is unavailable; no rollback exists. It can
-also execute arbitrary administrator-selected code as root during validation.
+This preserves configuration and persistent binary for reinstall. Instead use
+`wtctl uninstall --purge --yes` only for intentional irreversible deletion of
+manager configuration and credentials. Runtime state/RAM binary and the installed
+manager are removed; packages/network/firewall and release directories are untouched.
 
-`wtctl startup remove ADAPTER --yes` stops/disables and removes the managed
-startup adapter. For manually registered SysV hooks, also remove that external
-registration yourself. Then `wtctl uninstall --yes` stops the manager, removes
-runtime state and removes `/usr/sbin/wtctl` when invoked there. Configuration
-and persistent managed binaries remain. Use `--purge --yes` only for intentional
-deletion of `/etc/wtctl`. Externally supplied binaries are never deleted.
+## Physical evidence
+
+[Existing physical reports](PHYSICAL-TESTS.md) describe the earlier 0.1.0 lifecycle.
+The 0.2.0 simplification has not been tested on physical hardware. Historical
+physical harnesses fail closed on a newer version rather than executing obsolete
+disabled/draft/destructive-update scenarios. New device acceptance is still needed;
+container/PTY and traffic checks do not substitute for reboot/power/WAN qualification.

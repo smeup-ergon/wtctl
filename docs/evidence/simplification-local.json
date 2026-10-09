@@ -1,0 +1,40 @@
+{
+  "version": "0.2.0",
+  "candidate_sha256": "8c7e2f4ae3c78cb1d65bee0b1764f60b9fef13313a1e7b00e63014be54021600",
+  "installer_sha256": "3493f8efd38906d9f70e9e395a05ce21f6d6000030adba9b10b30024029cdf50",
+  "checks": [
+    {"command": "make check", "result": "passed", "scope": "POSIX-sh syntax, ShellCheck, 6 historical-helper unit tests, Python AST parsing"},
+    {"command": "./tests/run.sh --all", "result": "passed", "fixture_groups": 26, "real_traffic_checks": 4, "scope": "Linux amd64 Docker, Alpine BusyBox, fixture ELF and real wstunnel v11.0.0"},
+    {"command": "make openwrt-smoke", "result": "passed", "scope": "OpenWrt 22.03.4 x86-64 rootfs applets, failed mutation rollback, actual rc.common registration and doctor; not booted procd"},
+    {"command": "git diff --check", "result": "passed", "scope": "whitespace errors"}
+  ],
+  "pty_coverage": [
+    "single-key numeric navigation and all tunnel choices",
+    "letter overflow selection without Enter or pagination",
+    "invalid key and Enter handling",
+    "missing-stty line-input and password-file fallback",
+    "hidden password without echo",
+    "terminal restoration on EOF and SIGTERM during choices and password entry",
+    "interactive setup storage selection without Enter"
+  ],
+  "lifecycle_coverage": [
+    "removed commands rejected",
+    "automatic tunnel startup and implicit affected-only/shared-server edits",
+    "record/pointer rollback on conflicts, unavailable binary and local worker failure",
+    "supervisor crash and PID-reuse protection",
+    "saved settings and RAM/persistent binary recovery after runtime loss",
+    "scheduled boot retries and actual WAN restoration recovery",
+    "failed/invalid/downgraded updates retain working binary/configuration/clients",
+    "setup rerun preservation and explicit URL replacement",
+    "automatic boot registration, service startup and ownership preflight with init shims"
+  ],
+  "physical_testing_performed": false,
+  "production_qualified": false,
+  "residual_risks": [
+    "0.2.0 device setup, boot, power-cycle and true WAN recovery need physical qualification",
+    "multi-file transactions are not crash-atomic across SIGKILL or power loss",
+    "local worker startup is not a connectivity or OS socket-binding guarantee",
+    "historical reverse-UDP failure remains unresolved",
+    "older physical harnesses are version-gated historical tools, not 0.2.0 device acceptance coverage"
+  ]
+}

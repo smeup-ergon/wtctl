@@ -535,6 +535,8 @@ def main():
     if not args.yes or args.target.startswith('-'):
         parser.error('Explicit --yes and a valid target are required')
     session = Session(args)
+    if session.ssh('wtctl --version').strip() != b'0.1.0':
+        parser.error('Historical 0.1.0 harness: no device changes performed; automatic lifecycle needs new qualification')
     try:
         getattr(session, args.phase.replace('-', '_'))()
     except Exception as error:

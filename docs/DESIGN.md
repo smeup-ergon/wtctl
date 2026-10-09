@@ -1,128 +1,132 @@
-# Design
+# Design (0.2.0)
 
 ## Boundaries
 
-`wtctl` is one POSIX-shell executable. Linux `/proc` supplies process identity;
-no UCI, ubus or rpcd APIs are used by the core. The portable supervisor is
-independent of init-system APIs. Optional startup management and boot diagnostics
-use platform capabilities separately. The manager owns only client processes it launches. It never changes
-firewall, network interfaces, WAN listeners, firmware, vendor feeds, or the old
-project. Root is required for all operational commands; help/version/doctor are
-read-only and do not require root.
+One root-operated POSIX-shell executable; Linux `/proc` supplies process identity.
+No UCI, ubus or rpcd dependency in the core. Setup uses the existing init system
+for boot registration and service ownership. The manager never changes firewall,
+network interfaces, firmware, feeds, packages or unrelated processes. Help,
+version and doctor remain non-root, read-only operations.
 
-One foreground supervisor polls commands each second and scans/reconciles
-processes approximately every five seconds. One lightweight shell worker per
-wanted tunnel owns one wstunnel client and waits for it. Rapid failures back off
-from 2 to 30 seconds; a client surviving 60 seconds resets backoff. Client stdout
-and stderr go to `/dev/null`, with `RUST_LOG=off`. No tunnel logs are stored.
+A foreground supervisor polls requests each second and normally reconciles every
+five seconds. Mutation requests force immediate reconciliation before acknowledgment.
+One shell worker per configured tunnel owns a client. Rapid client failures back
+off from 2 to 30 seconds; surviving 60 seconds resets backoff. All client output
+is discarded with `RUST_LOG=off`; no tunnel logs are stored.
 
-## Data and configuration
+## Data and automatic transactions
 
-Default persistent root: `/etc/wtctl`; runtime root: `/tmp/wtctl`. Both are root
-owned and mode 0700; created files are mode 0600. Paths with symlink components
-are rejected, and persistent/runtime roots may not overlap. Overrides
-`WTCTL_CONFIG_DIR` and `WTCTL_STATE_DIR` support isolated development, not
-startup adapters. Use trusted ancestor directories; custom paths must not be
-under directories writable by untrusted users.
+Persistent `/etc/wtctl` and runtime `/tmp/wtctl` are root-owned mode 0700. Files
+are private; executables are mode 0700. Symlink path components and overlapping
+roots are rejected. `WTCTL_CONFIG_DIR`/`WTCTL_STATE_DIR` are development overrides,
+not supported by the device installer/startup adapters. Ancestors must be trusted.
 
-Configuration records are `key=value`, one field per line. Values may include
-spaces, `=` and shell metacharacters, but not CR/LF. Keys are fixed and required;
-unknown/duplicate fields fail validation. No record is sourced or evaluated.
-Names use ASCII letters/digits/underscore/hyphen, at most 64 characters; `all`
-and `global` are reserved. The global `format=1` identifies the data schema.
+Records are strict required `key=value` fields, one per line, never sourced or
+evaluated. Unknown/duplicate fields and CR/LF fail closed. IDs use ASCII letters,
+digits, underscore/hyphen, max 64 characters; `all` and `global` are reserved.
 
-- `global`: `format`, `storage`, `url`, `external`, `max_kib`, `reserve_kib`.
-- `servers/NAME`: `endpoint`, `auth`, `prefix`, `username`, `password`, `ca`.
-- `tunnels/NAME`: `server`, `direction`, `protocol`, `bind`, `listen`, `target`,
-  `port`, `enabled`.
-- `bin/wstunnel`: persistent managed executable, when selected.
+Schema **format=2**, fresh installs only:
 
-CLI writes serialize through an atomic directory lock and rename replacement
-records. Direct manual editors must not run concurrently with CLI writes/apply.
-`apply` validates the entire draft and copies immutable per-tunnel/server records
-into a persistent `applied/` generation, publishing its `current` path by atomic
-rename. Thus draft edits cannot accidentally change running clients or become
-active merely because RAM state was lost at reboot. Applied snapshots are tiny
-configuration copies, not binary copies; they are written only on explicit apply
-(or first launch when no initial snapshot exists). A config lock also serializes
-snapshot collection; generations used by workers remain available. The
-supervisor compares records and restarts only affected tunnels. Global binary
-settings changes may restart all tunnels. Only explicit update deletes a managed
-binary; changing its URL alone does not replace an existing executable.
+- `global`: `format storage url max_kib reserve_kib`.
+- `servers/NAME`: `endpoint auth prefix username password ca`.
+- `tunnels/NAME`: `server direction protocol bind listen target port`.
+- `bin/wstunnel`: managed persistent binary, when selected.
 
-Enabled configured listeners with the same direction/protocol/port and
-conflicting bind addresses are rejected. Reverse conflicts are scoped to the
-same profile. This is conservative configuration conflict detection, **not a
-full OS socket reservation mechanism**. Unmanaged listeners, IPv6 aliases and
-multiple profile names referring to one remote server can still conflict;
-wstunnel exits/retries and status exposes process failures. Arbitrary IPv6 text
-matching the allowed syntax is ultimately checked by wstunnel's parser.
+No enabled flag, external-binary mode, runtime start/stop overrides or public
+apply operation exists. Every configured tunnel is desired, including after boot.
 
-## Ownership, requests and recovery
+CLI mutations hold the config directory lock from record backup through complete
+validation, immutable snapshot publication and supervisor acknowledgment. Atomic
+rename publishes `current`. The internal snapshot layer is retained for rollback
+and worker isolation, not as an exposed draft/apply workflow. Failure restores
+both the previous saved record and current pointer, then reconciles the supervisor.
+Caught termination signals also roll back. Successful tunnel deletion immediately
+stops its worker/client. In-use server deletion fails.
 
-PID files pair PID with Linux `/proc/PID/stat` start time. A stale PID alone can
-never authorize a signal. Zombies are treated as exited. Cleanup targets only
-recorded workers, child clients and download processes; no `killall`/`pkill`.
-Supervisor restart first cleans owned orphans and resets temporary start/stop
-overrides, then restores enabled tunnels. procd/systemd keep the supervisor alive.
-Manual background launch has no external crash watchdog.
+Snapshot collection uses the same lock and retains generations used by workers.
+Comparison of tunnel/server records and executable paths restarts only affected
+workers. Shared-server edits restart each referencing tunnel. Global binary
+changes can restart all workers. Direct manual editing is unsupported while the
+manager runs; use CLI/wizard transactions.
 
-Commands use root-private request/response files, atomically published, with
-fixed action/name fields. Commands acknowledge queuing/lifecycle changes, not
-verified traffic success. If init already sent TERM, observing the owned
-supervisor exit also satisfies shutdown; its unconsumed shutdown request is
-removed so it cannot affect the next supervisor. State is runtime-only; no restart counter/history is
-written to flash. Explicit updates leave a runtime recovery marker until success
-or `stop all`, allowing recovery after a supervisor crash.
+All configured listeners are compared for conservative conflicts. Reverse
+conflicts are scoped to the same profile. This is not an OS socket reservation:
+unmanaged listeners, IPv6 aliases, and multiple profiles targeting one remote
+server can still conflict. Worker acknowledgment means local worker startup,
+not successful parsing by the client, socket binding or remote connectivity.
+Client exits are retained and retried rather than misclassified as remote/local
+configuration rollback evidence.
 
-Download workers are interruptible and have bounded curl operations. Missing
-RAM binaries recover while tunnels are wanted. Retry deadlines use epoch time;
-correct the device clock for TLS before expecting a successful download. Clock
-changes may alter backoff timing. Network-ready ordering is helpful but not
-required: recovery continues through outages.
+Transactions protect ordinary command failures and caught signals, **not durable
+crash-atomicity across SIGKILL or power loss mid-transaction**. Publication is
+atomic, but saved records/binary/pointer are separate files. Requalify abrupt
+power-loss behavior before production acceptance; backup configuration before
+maintenance. Uncertain rollback acknowledgment reports an error, not success.
 
-## Trust model
+## Ownership and recovery
 
-An administrator-selected HTTPS URL serves a raw ELF executable, not an archive.
-TLS stays verified. No checksum/signature requirement is imposed. ELF identity
-and bounded `client --help` check basic compatibility, not authenticity, ISA
-level, float ABI, kernel support, or complete runtime behavior. Validation
-executes downloaded code as root: trust the source accordingly.
+PID files pair PID with `/proc/PID/stat` start time; zombies are considered exited.
+Cleanup signals only recorded live owners. Supervisor recovery cleans owned
+orphans, then restores every saved tunnel. procd/systemd supervise the manager;
+manual background launch and SysV have no equivalent watchdog.
 
-Secrets are root-readable plaintext. Client argv may expose credentials to
-privileged process inspection. CLI status/listings redact endpoints, prefixes,
-usernames/passwords and CA paths. Hidden menu entry requires `stty`; CLI accepts
-a one-line password file. Neither mechanism removes secrets from wstunnel argv.
+Root-private atomically published requests support internal sync, pause and
+shutdown. Sync reloads the published generation before reconciliation; response
+occurs after local worker startup. Shutdown remains idempotent when init already
+sent TERM, removing unconsumed requests once the supervisor exits.
 
-Updates intentionally mirror the old manager: stop clients, delete the old
-managed executable, download, validate, activate. Space is preflighted before
-deleting; no rollback binary exists. Download failure means downtime, with
-indefinite capped retries. Externally supplied binaries live outside manager-owned
-roots and are never updated or deleted.
+Missing managed binaries download while any tunnel is desired. Download helpers
+are interruptible, bounded, and retry indefinitely from approximately 30 seconds
+to five minutes, with jitter. Retry deadlines use epoch time; correct clock and
+CA trust are prerequisites for HTTPS. No counters/history are written to flash.
 
-## Installation and boot diagnostics
+## Setup/update safety and trust
 
-The local installer requires `--yes` for installation approval. On a terminal it
-separately offers boot autostart, defaulting to No; unattended installs preserve
-boot preferences unless `--startup ADAPTER` is supplied. `--no-startup` suppresses
-the prompt and does not disable existing registration. Boot enablement does not
-start the service immediately. `startup enable` installs missing adapters or
-re-enables matching managed adapters without rewriting them; `startup install`
-still refuses existing files. Unrelated files/symlinks cannot be enabled.
+`scripts/install.sh` is the single setup/update entry point. It validates arguments
+and boot requirements, runs candidate manager code to configure the binary, then
+installs that script, ensures boot registration and transfers supervisor ownership
+to the service. Existing tunnels/settings are preserved. No URL means reuse;
+explicit URL means download a replacement even if unchanged. RAM/persistent
+storage is selectable; external binaries are not an exposed mode.
 
-`doctor` remains non-root-capable and does not prepare configuration/runtime
-state. Boot checks do not execute init scripts: OpenWrt priorities and owned
-start/stop links are inspected directly (rc.common status queries may take procd
-locks). SysV inspection finds conventional start links; arbitrary custom hooks
-and actual runlevel selection cannot be inferred. `readlink` is an optional
-inspection utility, not a supervisor dependency. systemd uses read-only
-`systemctl is-enabled`. Missing tools, unrecognized query responses and
-insufficient permissions produce unknown state rather than an enabled claim.
-Registration is distinct from current supervisor/process health.
+Download and compatibility validation happen before pausing running clients.
+The old binary remains in place during network waits. Activation pauses the
+supervisor, atomically renames the old executable to a backup, activates the
+candidate, and resumes via sync. The backup is removed only after acknowledgment;
+failures restore it and the old global record/pointer. Staging needs free space
+for the candidate plus reserve while retaining the old executable. Downloads
+use verified HTTPS-only redirects, size and time limits, matching native ELF
+identity, and bounded `client --help` checks. These checks do not authenticate
+code or prove full ISA/ABI compatibility. Trusted administrator-selected code
+executes as root. No checksum/signature mandate.
+
+Secrets remain root-only plaintext and may appear in privileged client argv.
+Lists/status redact them. Hidden terminal entry uses stty; its absence requires
+a private one-line password file.
+
+## Menus and boot diagnostics
+
+Fixed menus and confirmations use immediate single-key numeric choices; 0 means
+Back/Exit/Cancel. Existing-record lists use 1–9 then a–z without pagination.
+More than 35 records require numbered Enter-based input. Free-form values always
+use line input. Optional stty noncanonical mode plus an interruptible background
+byte reader avoid non-POSIX read extensions. Every read restores terminal settings
+on completion, EOF and signals. Missing stty falls back to line input.
+
+Setup always registers boot and starts the service. OpenWrt/systemd/SysV adapters
+are detected or explicitly selected. SysV requires update-rc.d rather than merely
+printing a manual-registration suggestion. Managed existing adapters are reused;
+unrelated files/symlinks are not overwritten. Startup commands remain administrative
+service plumbing for removal/diagnostics, not ordinary menu items.
+
+Doctor does not initialize state or execute init scripts. OpenWrt/SysV boot links
+are inspected (readlink optional); systemd uses is-enabled. Missing tools,
+permissions or unrecognized data report unknown, not enabled. Boot registration
+is distinct from process state or actual connectivity.
 
 ## Deliberate exclusions
 
-Server mode, automatic architecture-to-URL catalogs, archive extraction,
-checksums/signatures, rollback, automatic dependency installation, arbitrary
-shell/headers, mTLS, connected/traffic-health status, tunnel logs, firewall
-configuration, and physical qualification of unspecified distros/devices.
+Server mode, architecture-to-URL catalogs, archives, checksums/signatures,
+automatic dependencies, arbitrary shell/headers, mTLS, traffic-health status,
+tunnel logs, firewall configuration, legacy migration and unspecified hardware
+qualification.

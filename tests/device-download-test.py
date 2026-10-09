@@ -52,6 +52,9 @@ def wait_for(callback, timeout):
     raise TimeoutError("Physical download acceptance condition timed out")
 
 
+if ssh('wtctl --version').strip() != b'0.1.0':
+    parser.error('Historical 0.1.0 harness: no device changes performed; new setup/update acceptance is required')
+
 try:
     ssh("test ! -e /etc/init.d/wtctl; test -z \"$(ls -A /etc/wtctl/servers)\"; test -z \"$(ls -A /etc/wtctl/tunnels)\"; wtctl shutdown")
     before = ssh("sha256sum /etc/config/network /etc/config/firewall /etc/config/system /etc/nginx/nginx.conf")

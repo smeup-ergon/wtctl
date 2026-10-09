@@ -37,7 +37,9 @@ class UDPResultTests(unittest.TestCase):
                 if argv[0] == 'ssh':
                     command = argv[-1]
                     commands.append(command)
-                    if 'wtctl stop os_rudp' in command:
+                    if command.endswith('wtctl --version'):
+                        stdout = b'0.1.0\n'
+                    elif 'wtctl stop os_rudp' in command:
                         stopped = True
                     elif 'wtctl start os_rudp' in command:
                         stopped = False
