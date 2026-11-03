@@ -128,18 +128,19 @@ validate_tunnel() {
     bind_address "$bind" && port "$listen" && host "$target" && port "$target_port"
 }
 validate_config() (
-    validate_global "$CONFIG/global" || fail 'Invalid global configuration'
+    config_root=${1:-$CONFIG}
+    validate_global "$config_root/global" || fail 'Invalid global configuration'
     set +f
-    for file in "$CONFIG"/servers/*; do
+    for file in "$config_root"/servers/*; do
         [ -e "$file" ] || continue
         valid_id "${file##*/}" && validate_server "$file" || fail "Invalid server: ${file##*/}"
     done
-    for file in "$CONFIG"/tunnels/*; do
+    for file in "$config_root"/tunnels/*; do
         [ -e "$file" ] || continue
         valid_id "${file##*/}" && validate_tunnel "$file" || fail "Invalid tunnel: ${file##*/}"
-        [ -f "$CONFIG/servers/$server" ] || fail "Unknown server for ${file##*/}"
+        [ -f "$config_root/servers/$server" ] || fail "Unknown server for ${file##*/}"
         # Reverse listeners conflict only on the same profile.
-        for other in "$CONFIG"/tunnels/*; do
+        for other in "$config_root"/tunnels/*; do
             [ "$file" != "$other" ] || continue
             [ "$direction" = "$(get "$other" direction)" ] && [ "$protocol" = "$(get "$other" protocol)" ] && [ "$listen" = "$(get "$other" listen)" ] || continue
             [ "$direction" != reverse ] || [ "$server" = "$(get "$other" server)" ] || continue
@@ -149,6 +150,109 @@ validate_config() (
             fi
         done
     done
+)
+# Compile a complete INI document into private records for the existing validators.
+# The caller owns the empty output directory; this never touches live settings.
+compile_ini() (
+    input=$1; output=$2
+    [ -f "$input" ] && [ ! -L "$input" ] || fail 'Configuration must be a regular file'
+    bytes=$(wc -c < "$input")
+    [ "$bytes" -le 65536 ] || fail 'Configuration exceeds 64 KiB'
+    printable=$(LC_ALL=C tr -cd '\11\12\40-\176' < "$input" | wc -c)
+    [ "$bytes" -eq "$printable" ] || fail 'Configuration must contain printable ASCII, tabs and newlines only'
+    mkdir "$output/servers" "$output/tunnels" || exit 1
+    LC_ALL=C awk -v out="$output" '
+    function error(message) {print "wtctl: INI line " NR ": " message > "/dev/stderr"; bad=1; exit 1}
+    function trim(s) {sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s}
+    function field(k, fallback) {return ((section SUBSEP k) in values) ? values[section,k] : fallback}
+    function required(k) {if(field(k, "")=="") error("missing " section "." k); return field(k, "")}
+    function writefield(path,k,v) {print k "=" v > path}
+    function record(   p,k,keys,n,i) {
+        if(section=="") return
+        if(section=="wtctl") {
+            if(required("format")!="1") error("unsupported format")
+            p=out "/global"
+            writefield(p,"format","2"); writefield(p,"storage",field("storage","ram"))
+            writefield(p,"url",required("wstunnel_url"))
+            writefield(p,"max_kib",field("max_kib","24576"))
+            writefield(p,"reserve_kib",field("reserve_kib","1024"))
+            writefield(out "/manager","url",required("url"))
+        } else if(section=="control") {
+            p=out "/control"
+            writefield(p,"enabled",field("enabled","true"))
+            writefield(p,"server",required("server"))
+            writefield(p,"bind",field("bind","::"))
+            writefield(p,"listen",field("listen","8099"))
+        } else if(kind=="server") {
+            p=out "/servers/" name
+            writefield(p,"endpoint",required("endpoint")); writefield(p,"auth",field("auth","none"))
+            n=split("prefix username password ca",keys," ")
+            for(i=1;i<=n;i++) writefield(p,keys[i],field(keys[i],""))
+        } else {
+            p=out "/tunnels/" name
+            writefield(p,"server",required("server")); writefield(p,"direction",field("direction","forward"))
+            writefield(p,"protocol",field("protocol","tcp")); writefield(p,"bind",field("bind","127.0.0.1"))
+            writefield(p,"listen",required("listen")); writefield(p,"target",required("target"))
+            writefield(p,"port",required("port"))
+        }
+        close(p)
+    }
+    {
+        if($0 ~ /[^\t -~]/) error("only printable ASCII and tabs are supported")
+        line=trim($0)
+        if(line=="" || line ~ /^[#;]/) next
+        if(line ~ /^\[/) {
+            record()
+            if(line !~ /^\[[^][]+\]$/) error("invalid section")
+            section=substr(line,2,length(line)-2); kind=""; name=""
+            if(sections[section]++) error("duplicate section")
+            if(section=="wtctl") allowed=" format url wstunnel_url storage max_kib reserve_kib "
+            else if(section=="control") allowed=" enabled server bind listen "
+            else {
+                n=split(section,parts," ")
+                kind=parts[1]; name=parts[2]
+                if(n!=2 || (kind!="server" && kind!="tunnel") || name !~ /^[A-Za-z0-9_-]+$/ || length(name)>64 || name=="all" || name=="global" || name=="__control") error("invalid section name")
+                if(kind=="server") allowed=" endpoint auth prefix username password ca "
+                else allowed=" server direction protocol bind listen target port "
+            }
+            next
+        }
+        if(section=="") error("field before section")
+        pos=index(line,"="); if(!pos) error("expected key=value")
+        key=trim(substr(line,1,pos-1)); value=trim(substr(line,pos+1))
+        if(key !~ /^[a-z_]+$/ || index(allowed," " key " ")==0) error("unknown field")
+        if((section SUBSEP key) in values) error("duplicate field")
+        values[section,key]=value
+    }
+    END {
+        if(bad) exit 1
+        record()
+        if(!sections["wtctl"] || !sections["control"]) error("wtctl and control sections are required")
+    }' "$input" || exit 1
+    validate_config "$output" || exit 1
+    url https "$(get "$output/manager" url)" || fail 'Invalid wtctl URL'
+    url https "$(get "$output/global" url)" || fail 'Invalid wstunnel URL'
+    control_server=$(get "$output/control" server)
+    valid_id "$control_server" && [ -f "$output/servers/$control_server" ] || fail 'Unknown control server'
+    case "$(get "$output/control" enabled)" in true|false) ;; *) fail 'Invalid control enabled value';; esac
+    bind_address "$(get "$output/control" bind)" && port "$(get "$output/control" listen)" || fail 'Invalid control listener'
+    # Reserve the receiver name and validate the control listener against ordinary
+    # reverse listeners without ever publishing it as an ordinary tunnel.
+    if [ "$(get "$output/control" enabled)" = true ]; then
+        { put server "$control_server"; put direction reverse; put protocol tcp
+          put bind "$(get "$output/control" bind)"; put listen "$(get "$output/control" listen)"
+          put target localhost; put port 8099; } > "$output/tunnels/__control"
+        validate_config "$output" || exit 1
+        rm "$output/tunnels/__control"
+    fi
+)
+validate_ini() (
+    [ "$#" = 1 ] || fail 'Usage: wtctl validate FILE'
+    staging=$(mktemp -d "${TMPDIR:-/tmp}/wtctl-validate.XXXXXXXX") || exit 1
+    trap 'rm -rf "$staging"' EXIT
+    trap 'exit 1' HUP INT TERM
+    compile_ini "$1" "$staging" || exit 1
+    printf 'Configuration valid\n'
 )
 publish_config() {
     validate_config || exit 1
@@ -1044,6 +1148,7 @@ startup() {
 help() {
     printf '%s\n' "wtctl $VERSION — wstunnel client manager" \
         '  doctor | menu | status' \
+        '  validate FILE  (check a complete INI configuration without applying it)' \
         '  server add|edit NAME --endpoint wss://HOST [--auth none|path|basic]' \
         '      [--prefix VALUE] [--username USER --password-file FILE] [--ca FILE]' \
         '  server list | server remove NAME' \
@@ -1057,7 +1162,7 @@ help() {
         'Install/update/configure the binary by rerunning scripts/install.sh.'
 }
 command=${1:-}; [ "$#" = 0 ] || shift
-case "$command" in --help|-h|help) help; exit;; --version) printf '%s\n' "$VERSION"; exit;; doctor) doctor; exit $?;; esac
+case "$command" in --help|-h|help) help; exit;; --version) printf '%s\n' "$VERSION"; exit;; doctor) doctor; exit $?;; validate) validate_ini "$@"; exit $?;; esac
 prepare
 case "$command" in
     '') if [ -t 0 ] && [ -t 1 ]; then menu; else help; fi;;

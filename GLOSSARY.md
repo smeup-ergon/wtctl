@@ -1,0 +1,33 @@
+# wtctl
+
+wtctl manages persistent tunnels on a device. Its local and remote management interfaces share one desired configuration.
+
+## Language
+
+**Desired configuration**:
+The complete description of the device's intended wtctl setup, including managed tunnels, control connectivity, and software source URLs. The latest local or remote submission is authoritative, even if its activation fails.
+_Avoid_: Remote configuration, local configuration
+
+**Active configuration**:
+The last complete desired configuration whose activation succeeded. It remains the working setup when a replacement fails to activate.
+
+**Managed tunnel**:
+An ordinary forwarding tunnel declared in the desired configuration, maintained automatically until it is removed from that configuration.
+
+**Control tunnel**:
+A dedicated tunnel for remotely submitting and retrieving the device's desired configuration. It is managed separately from ordinary managed tunnels, is enabled by default, and can be explicitly disabled.
+
+**Accepted control settings**:
+The control connectivity settings retained after their connection has succeeded, distinct from an unconfirmed replacement in the desired configuration.
+
+**Draft configuration**:
+A submitted replacement for the desired configuration that has not yet passed all acceptance checks. When control settings change, resubmitting the same draft through the replacement control tunnel confirms its reachability.
+
+**Software source URL**:
+The configured download location for either wtctl itself or the wstunnel executable. A change of URL requests an update; unchanged URLs do not request another update.
+
+**Activation state**:
+The last successfully activated software source URLs and accepted control settings. It records successful activation rather than providing a separate source of desired configuration.
+
+**Configuration activation**:
+An attempt to make a desired configuration the device's active configuration. A failed attempt is reported rather than automatically retried; recovery of already accepted software and tunnels is distinct from a new activation attempt.

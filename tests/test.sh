@@ -146,7 +146,11 @@ wait_running ft
 [ "$(field /test/state/tunnels/ft/status restarts)" -ge 1 ] || fail 'no restart count'
 [ "$(field /test/state/tunnels/ft/status exit)" = 7 ] || fail 'last exit missing'
 ok 'unreachable/failing client stays configured and retries'
-removed_pid=$(pid ru)
+# All workers saw the injected failure. Wait for this worker too, and retain
+# the PID validated by wait_running rather than resampling a transient status.
+# BusyBox kill -0 "" succeeds and /proc//stat is the system CPU-stat file.
+wait_running ru
+removed_pid=$p
 "$W" tunnel remove ru
 [ ! -d /test/state/tunnels/ru ] && [ ! -e /test/config/tunnels/ru ] || fail 'remove not reconciled'
 if kill -0 "$removed_pid" 2>/dev/null; then
