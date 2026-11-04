@@ -2,6 +2,9 @@
 
 Status: design confirmed; implementation in progress. This describes a replacement management model, not current implemented behavior except where explicitly noted.
 
+Implementation and operator instructions: [NETCAT-CONTROL.md](NETCAT-CONTROL.md).
+The remote sender is plain netcat, not a dedicated management application.
+
 ## Scope
 
 - Replace interactive wizards/menus and per-record mutation workflows with one complete INI desired configuration.
@@ -113,7 +116,7 @@ Request headers terminate with a newline. Configuration responses carry a byte c
 
 After `PENDING`, the tool connects through the candidate and submits identical bytes; that connection receives the final result. The original connection may disappear. Reconnect and use status/configuration reads to resolve uncertainty; repeating a failed desired configuration explicitly retries it.
 
-Maximum configuration size is 64 KiB. Request-read timeout is 15 seconds. Download time must be bounded; draft download failures are reported without automatic retry. Exact response framing, status payload grammar, reason codes, and download deadline must be pinned down before implementation, without adding protocol operations beyond those above.
+Maximum configuration size is 64 KiB. Request-read timeout is 15 seconds. Each download has a 180-second deadline and 20-second connect timeout; draft download failures are reported without automatic retry. Response framing, status payload grammar, and reason codes are specified in [NETCAT-CONTROL.md](NETCAT-CONTROL.md), without additional protocol operations.
 
 ## Concurrent submissions
 

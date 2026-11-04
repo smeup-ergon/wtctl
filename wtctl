@@ -1,7 +1,7 @@
 #!/bin/sh
 # wtctl: root-operated, POSIX-shell wstunnel client manager for Linux.
 # Configuration is data: never source it, never eval it.
-# shellcheck disable=SC2012,SC2015,SC2016
+# shellcheck disable=SC2012,SC2015,SC2016,SC2030,SC2031
 # ls is used only for numeric directory ownership; &&/|| guards are intentional.
 set -f
 umask 077
@@ -211,7 +211,7 @@ compile_ini() (
             else {
                 n=split(section,parts," ")
                 kind=parts[1]; name=parts[2]
-                if(n!=2 || (kind!="server" && kind!="tunnel") || name !~ /^[A-Za-z0-9_-]+$/ || length(name)>64 || name=="all" || name=="global" || name=="__control") error("invalid section name")
+                if(n!=2 || (kind!="server" && kind!="tunnel") || name !~ /^[A-Za-z0-9_-]+$/ || length(name)>64 || name=="all" || name=="global" || name=="__control" || name=="__previous_control") error("invalid section name")
                 if(kind=="server") allowed=" endpoint auth prefix username password ca "
                 else allowed=" server direction protocol bind listen target port "
             }
@@ -269,6 +269,17 @@ publish_config() {
         cp "$CONFIG/servers/$(get "$file" server)" "$generation/$name/server" || fail 'Cannot snapshot server'
     done
     set -f
+    if [ -f "$CONFIG/control" ] && [ "$(get "$CONFIG/control" enabled)" = true ]; then
+        mkdir "$generation/__control" || fail 'Cannot snapshot control'
+        { put server "$(get "$CONFIG/control" server)"; put direction reverse; put protocol tcp
+          put bind "$(get "$CONFIG/control" bind)"; put listen "$(get "$CONFIG/control" listen)"
+          put target 127.0.0.1; put port "$(get "$CONFIG/control" receiver)"; } > "$generation/__control/tunnel"
+        cp "$CONFIG/servers/$(get "$CONFIG/control" server)" "$generation/__control/server" || exit 1
+    fi
+    if [ -f "$STATE/previous-control" ]; then
+        previous_control=$(cat "$STATE/previous-control")
+        [ ! -d "$previous_control" ] || cp -R "$previous_control" "$generation/__previous_control" || exit 1
+    fi
     printf '%s\n' "$generation" > "$CONFIG/current.new.$$" && mv "$CONFIG/current.new.$$" "$CONFIG/current" || fail 'Cannot publish applied configuration'
 }
 current() { head -n 1 "$CONFIG/current" 2>/dev/null; }
@@ -280,7 +291,9 @@ binary_path() {
 # Bounded execution without requiring the timeout applet.
 bounded() (
     limit=$1; shift
-    "$@" & bounded_pid=$!
+    exec 3<&0
+    "$@" <&3 3<&- & bounded_pid=$!
+    exec 3<&-
     trap 'kill -TERM "$bounded_pid" 2>/dev/null; sleep 1; kill -KILL "$bounded_pid" 2>/dev/null; wait "$bounded_pid" 2>/dev/null; exit 143' TERM INT
     elapsed=0
     while kill -0 "$bounded_pid" 2>/dev/null; do
@@ -335,7 +348,9 @@ download() {
     size=$(wc -c < "$db.part")
     if [ ! -s "$db.part" ] || [ "$size" -gt "$((dm*1024))" ]; then rm -f "$db.part"; phase empty-or-oversized-binary; return 1; fi
     chmod 700 "$db.part"
-    validate_binary "$db.part" || { rm -f "$db.part"; phase incompatible-binary; return 1; }
+    if [ "${3:-wstunnel}" = manager ]; then
+        validate_manager "$db.part" || { rm -f "$db.part"; phase incompatible-manager; return 1; }
+    else validate_binary "$db.part" || { rm -f "$db.part"; phase incompatible-binary; return 1; }; fi
     mv "$db.part" "$db" || { rm -f "$db.part"; phase activation-failed; return 1; }
     phase ready
 }
@@ -396,6 +411,8 @@ manager_cleanup() {
     terminate "$STATE/download-worker"; terminate "$STATE/download-child"
     [ -z "${download_pid:-}" ] || wait "$download_pid" 2>/dev/null
     stop_workers
+    terminate "$STATE/receiver"
+    terminate "$STATE/previous-receiver"
     rm -f "$STATE/download-worker" "$STATE/download-child" "$STATE/daemon" "$STATE/next-download"
     unlock
     exit 0
@@ -468,6 +485,7 @@ prune_snapshots() (
     set +f
     for generation in "$CONFIG"/applied/*; do
         [ -d "$generation" ] && [ "$generation" != "$active" ] && [ "$generation" != "$latest" ] || continue
+        [ "$generation" != "$(cat "$CONFIG/accepted-current" 2>/dev/null)" ] || continue
         used=0
         for meta in "$STATE"/tunnels/*/snapshot; do
             [ -f "$meta" ] || continue
@@ -485,6 +503,10 @@ daemon() {
     terminate "$STATE/download-worker"; terminate "$STATE/download-child"
     rm -f "$STATE/download-worker" "$STATE/download-child"
     stop_workers
+    # Outside a live activation (including reboot), use the accepted snapshot.
+    if [ -f "$CONFIG/accepted-current" ] && ! owned_alive "$STATE/config.lock/owner"; then
+        cp "$CONFIG/accepted-current" "$CONFIG/current"
+    fi
     active=$(current); [ -d "$active" ] || fail 'Missing configuration snapshot'
     download_pid=; checked_binary=; download_due=0; download_delay=30; scan_due=0
     paused=0; sync_request=
@@ -502,6 +524,22 @@ daemon() {
             fi
         fi
         if [ "$paused" = 1 ]; then sleep 1; continue; fi
+        if [ -d "$active/__control" ]; then
+            receiver_port=$(get "$active/__control/tunnel" port)
+            if ! owned_alive "$STATE/receiver" || [ "$(get "$STATE/receiver" port)" != "$receiver_port" ]; then
+                terminate "$STATE/receiver"
+                "$SELF" _receiver "$receiver_port" </dev/null >/dev/null 2>&1 &
+                receiver_pid=$!; record_pid "$STATE/receiver" "$receiver_pid"
+                put port "$receiver_port" >> "$STATE/receiver"
+            fi
+        else terminate "$STATE/receiver"; fi
+        if [ -d "$active/__previous_control" ]; then
+            previous_port=$(get "$active/__previous_control/tunnel" port)
+            if ! owned_alive "$STATE/previous-receiver"; then
+                "$SELF" _receiver "$previous_port" </dev/null >/dev/null 2>&1 &
+                previous_pid=$!; record_pid "$STATE/previous-receiver" "$previous_pid"
+            fi
+        else terminate "$STATE/previous-receiver"; fi
         now=$(date +%s)
         if [ "$now" -lt "$scan_due" ]; then sleep 1; continue; fi
         scan_due=$((now+5))
@@ -581,6 +619,13 @@ send_request() {
     done
     response=$(head -n 1 "$STATE/responses/$rid"); rm -f "$STATE/responses/$rid"
     [ "$response" = ok ] || fail "$response"
+    if [ "$1" = shutdown ]; then
+        count=0
+        while owned_alive "$STATE/daemon"; do
+            count=$((count+1)); [ "$count" -lt 30 ] || fail 'Supervisor shutdown timed out'
+            sleep 1
+        done
+    fi
 }
 # Hold the configuration lock through publication and supervisor acknowledgment.
 # EXIT/signal rollback restores both the saved record and the published pointer.
@@ -743,6 +788,11 @@ status() {
     for tunnel_dir in "$active"/*; do
         [ -d "$tunnel_dir" ] || continue
         name=${tunnel_dir##*/}; work=$STATE/tunnels/$name
+        [ "$name" != __previous_control ] || continue
+        if [ "$name" = __control ]; then
+            printf 'Control: %s (%s)\n' "$(get "$work/status" state)" "$(tunnel_details "$tunnel_dir/tunnel")"
+            continue
+        fi
         state=$(get "$work/status" state); [ -n "$state" ] || state=stopped
         pid=$(get "$work/status" pid)
         if [ "$state" = running ] && ! owned_alive "$work/child"; then state=stopped; pid=; fi
@@ -1145,10 +1195,273 @@ startup() {
         *) fail 'Choose openwrt, systemd or sysv';;
     esac
 }
+validate_manager() {
+    [ -s "$1" ] && grep -q '^# wtctl: root-operated, POSIX-shell wstunnel client manager for Linux.$' "$1" &&
+        sh -n "$1" && [ "$(bounded 15 "$1" --version)" != '' ]
+}
+activation_status() {
+    printf '%s\n' "$1" > "$STATE/activation.new.$$"
+    mv "$STATE/activation.new.$$" "$STATE/activation"
+}
+job_result() {
+    printf '%s\n' "$2" > "$1/result.new.$$"
+    mv "$1/result.new.$$" "$1/result"
+}
+# An nc exec handler receives one bounded header and, for PUT, exact bytes.
+# dd bs=1 is deliberate: a short socket read must not truncate a payload.
+read_control_request() {
+    request_dir=$1; header=; count=0
+    while :; do
+        byte=$(dd bs=1 count=1 2>/dev/null | hex)
+        [ -n "$byte" ] || return 1
+        [ "$byte" != 0a ] || break
+        case "$byte" in 0[0-9a-f]|1[0-9a-f]|7f) return 1;; esac
+        char=$(printf '%b' "\\$(printf '%03o' "$((0x$byte))")")
+        header=$header$char; count=$((count+1)); [ "$count" -le 128 ] || return 1
+    done
+    printf '%s\n' "$header" > "$request_dir/header"
+    case "$header" in
+        GET|'GET ACTIVE'|STATUS) return 0;;
+        PUT\ *) length=${header#PUT }; number "$length" && [ "$length" -gt 0 ] && [ "$length" -le 65536 ] || return 1
+            dd bs=1 count="$length" of="$request_dir/input" 2>/dev/null || return 1
+            [ "$(wc -c < "$request_dir/input")" -eq "$length" ];;
+        *) return 1;;
+    esac
+}
+control_receiver() {
+    port "$1" || fail 'Invalid receiver port'
+    export WTCTL_RECEIVER_PORT="$1"
+    handler=$STATE/handler-$1
+    # SELF is not interpolated into shell source; paths remain literal data.
+    printf '#!/bin/sh\nexec "$WTCTL_HANDLER_SELF" _handle\n' > "$handler"
+    chmod 700 "$handler"
+    export WTCTL_HANDLER_SELF="$SELF"
+    exec nc -lk -s 127.0.0.1 -p "$1" -e "$handler"
+}
+control_handle() (
+    request_dir=$(mktemp -d "$STATE/request.XXXXXXXX") || exit 1
+    trap 'rm -rf "$request_dir"' EXIT
+    if ! bounded 15 "$SELF" _read-control "$request_dir"; then printf 'KO invalid-request\n'; exit 1; fi
+    header=$(cat "$request_dir/header")
+    case "$header" in
+        GET|'GET ACTIVE')
+            source=$CONFIG/desired.ini; [ "$header" != 'GET ACTIVE' ] || source=$CONFIG/active.ini
+            if [ ! -f "$source" ]; then printf 'KO unavailable\n'; exit 1; fi
+            cp "$source" "$request_dir/reply" || exit 1
+            printf 'OK %s\n' "$(wc -c < "$request_dir/reply")"; cat "$request_dir/reply";;
+        STATUS)
+            status_text=$(cat "$STATE/activation" 2>/dev/null || printf idle)
+            printf '%s\n' "$status_text" > "$request_dir/reply"
+            printf 'OK %s\n' "$(wc -c < "$request_dir/reply")"; cat "$request_dir/reply";;
+        PUT\ *) submit_ini "$request_dir/input" "${WTCTL_RECEIVER_PORT:-}";;
+    esac
+)
+apply_ini() (
+    [ "$#" = 1 ] || fail 'Usage: wtctl apply FILE|-'
+    input_dir=$(mktemp -d "$STATE/input.XXXXXXXX") || exit 1
+    trap 'rm -rf "$input_dir"' EXIT
+    if [ "$1" = - ]; then
+        dd bs=1 count=65537 of="$input_dir/input" 2>/dev/null || exit 1
+    else [ -f "$1" ] && [ ! -L "$1" ] && cp "$1" "$input_dir/input" || fail 'Configuration must be a regular file'; fi
+    submit_ini "$input_dir/input" ''
+)
+submit_ini() (
+    submission=$(mktemp -d "$STATE/submission.XXXXXXXX") || exit 1
+    trap 'rm -rf "$submission"' EXIT
+    if ! compile_ini "$1" "$submission" >"$submission/error" 2>&1; then printf 'KO invalid-configuration\n'; cat "$submission/error" >&2; exit 1; fi
+    lock submission
+    trap 'unlock; rm -rf "$submission"' EXIT
+    pending=$(cat "$STATE/pending" 2>/dev/null || :)
+    if [ -n "$pending" ] && [ "$(cat "$STATE/latest-job" 2>/dev/null)" = "$pending" ] && cmp -s "$1" "$pending/input"; then
+        job=$pending; confirmation=0
+        if [ -n "$2" ] && [ "$2" = "$(cat "$pending/receiver" 2>/dev/null)" ]; then
+            : > "$pending/confirmed"; confirmation=1
+        fi
+    else
+        job=$(mktemp -d "$STATE/job.XXXXXXXX") || exit 1
+        cp "$1" "$job/input" && cp "$SELF" "$job/runner" && chmod 700 "$job/runner" || exit 1
+        cp "$1" "$CONFIG/desired.ini.new.$$" && mv "$CONFIG/desired.ini.new.$$" "$CONFIG/desired.ini" || exit 1
+        printf '%s\n' "$job" > "$STATE/latest-job.new.$$" && mv "$STATE/latest-job.new.$$" "$STATE/latest-job" || exit 1
+        # Run from an immutable copy, independent of nc, the supervisor and SELF.
+        (trap '' HUP; exec "$job/runner" _activate "$job" "$SELF" </dev/null >"$job/log" 2>&1) &
+        coordinator_pid=$!; record_pid "$job/coordinator" "$coordinator_pid"
+        confirmation=0
+    fi
+    unlock; trap 'rm -rf "$submission"' EXIT
+    while :; do
+        if [ -f "$job/result" ]; then
+            result=$(cat "$job/result"); printf '%s\n' "$result"
+            : > "$job/delivered"
+            case "$result" in OK*) exit 0;; *) exit 1;; esac
+        fi
+        if [ "$confirmation" = 0 ] && [ "$(cat "$STATE/pending" 2>/dev/null)" = "$job" ]; then
+            printf 'PENDING confirmation-required\n'; exit 0
+        fi
+        if ! owned_alive "$job/coordinator"; then
+            # Result publication and process exit may race this observation.
+            [ ! -f "$job/result" ] || continue
+            printf 'KO activation-process-lost\n'; exit 1
+        fi
+        sleep 1
+    done
+)
+# The coordinator owns rollback until all activation checks have succeeded.
+# Only its private runner survives replacement of the installed executable.
+activate_rollback() {
+    trap - EXIT HUP INT TERM
+    if [ "${activation_changed:-0}" = 1 ]; then
+        if owned_alive "$STATE/daemon"; then (send_request pause) || :; fi
+        for record in global control; do
+            if [ -f "$job/old/$record" ]; then cp "$job/old/$record" "$CONFIG/$record"; else rm -f "$CONFIG/$record"; fi
+        done
+        for record in servers tunnels; do
+            rm -rf "${CONFIG:?}/${record:?}"; cp -R "$job/old/$record" "$CONFIG/$record"
+        done
+        for software in manager binary; do
+            destination=$(cat "$job/$software-path" 2>/dev/null || :)
+            [ -n "$destination" ] || continue
+            if [ -f "$job/$software-old" ]; then cp "$job/$software-old" "$destination.rollback.$$" && mv "$destination.rollback.$$" "$destination"
+            else rm -f "$destination"; fi
+        done
+        if [ -n "$old_current" ]; then printf '%s\n' "$old_current" > "$CONFIG/current.new.$$"; mv "$CONFIG/current.new.$$" "$CONFIG/current"
+        else rm -f "$CONFIG/current"; fi
+        if owned_alive "$STATE/daemon"; then (send_request shutdown) || :; fi
+        if [ -n "$old_current" ]; then (SELF=$installed; ensure_daemon; send_request sync) || :; fi
+    fi
+    terminate "$job/candidate-worker"; terminate "$job/candidate-child"; terminate "$job/candidate-receiver"
+    if [ "$(cat "$STATE/pending" 2>/dev/null)" = "$job" ]; then rm -f "$STATE/pending"; fi
+    rm -f "$STATE/previous-control"
+    activation_status "failed ${failure:-activation-failed}"
+    job_result "$job" "KO ${failure:-activation-failed}"
+    unlock
+}
+activate_ini() {
+    job=$1; installed=$2
+    # Wait outside the normal bounded mutation lock: downloads and confirmation
+    # can take longer than ten seconds. Never steal a live coordinator's lock.
+    LOCK=$STATE/config.lock
+    while ! mkdir "$LOCK" 2>/dev/null; do
+        if [ -f "$LOCK/owner" ] && ! owned_alive "$LOCK/owner"; then rm -f "$LOCK/owner"; rmdir "$LOCK" 2>/dev/null || :; fi
+        sleep 1
+    done
+    record_pid "$LOCK/owner" "$$"
+    if [ "$(cat "$STATE/latest-job")" != "$job" ]; then job_result "$job" 'KO superseded'; unlock; return 1; fi
+    activation_changed=0; old_current=$(current); failure=activation-failed
+    trap 'activate_rollback' EXIT
+    trap 'exit 130' HUP INT TERM
+    mkdir "$job/compiled" "$job/old" || exit 1
+    compile_ini "$job/input" "$job/compiled" || exit 1
+    for record in global control servers tunnels; do [ ! -e "$CONFIG/$record" ] || cp -R "$CONFIG/$record" "$job/old/$record" || exit 1; done
+    activation_status applying
+    # Bootstrap deliberately has no tunnels and control disabled. It is the
+    # accepted fallback if the first desired configuration cannot activate.
+    if [ -z "$old_current" ]; then publish_config || exit 1; old_current=$(current); fi
+    if [ ! -f "$CONFIG/accepted-current" ]; then cp "$CONFIG/current" "$CONFIG/accepted-current" || exit 1; fi
+    compiled=$job/compiled
+    confirmation_required=0
+    if [ "$(get "$compiled/control" enabled)" = true ]; then
+        if [ ! -f "$CONFIG/active.ini" ] || [ ! -f "$CONFIG/control" ] || [ "$(get "$CONFIG/control" enabled)" != true ] ||
+            [ "$(get "$compiled/manager" url)" != "$(get "$CONFIG/activation-state" manager_url)" ] ||
+            [ "$(get "$compiled/global" url)" != "$(get "$CONFIG/activation-state" wstunnel_url)" ]; then confirmation_required=1
+        else
+            for key in server bind listen; do [ "$(get "$compiled/control" "$key")" = "$(get "$CONFIG/control" "$key")" ] || confirmation_required=1; done
+            cmp -s "$compiled/servers/$(get "$compiled/control" server)" "$CONFIG/servers/$(get "$CONFIG/control" server)" || confirmation_required=1
+        fi
+    fi
+    binary_destination=$(binary_path "$compiled/global")
+    if [ "$(get "$compiled/global" url)" != "$(get "$CONFIG/activation-state" wstunnel_url)" ] || ! validate_binary "$binary_destination"; then
+        failure=download-failed
+        (download "$compiled/global" "$job/binary-new") || exit 1
+    fi
+    if [ "$(get "$compiled/manager" url)" != "$(get "$CONFIG/activation-state" manager_url)" ]; then
+        { put format 2; put storage persistent; put url "$(get "$compiled/manager" url)"; put max_kib "$(get "$compiled/global" max_kib)"; put reserve_kib "$(get "$compiled/global" reserve_kib)"; } > "$job/manager-global"
+        failure=manager-download-failed
+        (download "$job/manager-global" "$job/manager-new" manager) || exit 1
+    fi
+    [ "$(cat "$STATE/latest-job")" = "$job" ] || { failure=superseded; exit 1; }
+    failure=activation-failed
+    if { [ -f "$job/binary-new" ] || [ -f "$job/manager-new" ]; } && owned_alive "$STATE/daemon"; then
+        (send_request pause) || exit 1
+    fi
+    activation_changed=1
+    for software in binary manager; do
+        [ -f "$job/$software-new" ] || continue
+        destination=$binary_destination; [ "$software" != manager ] || destination=$installed
+        if [ "$software" = binary ]; then private_dir "$(dirname "$destination")"; else safe_path "$destination"; fi
+        printf '%s\n' "$destination" > "$job/$software-path"
+        [ ! -f "$destination" ] || cp -p "$destination" "$job/$software-old" || exit 1
+        cp "$job/$software-new" "$destination.new.$$" && chmod 700 "$destination.new.$$" && mv "$destination.new.$$" "$destination" || exit 1
+    done
+    for record in global servers tunnels; do
+        rm -rf "${CONFIG:?}/${record:?}"; cp -R "$compiled/$record" "$CONFIG/$record" || exit 1
+    done
+    cp "$compiled/control" "$CONFIG/control" || exit 1
+    receiver_port=8099
+    [ ! -f "$job/old/control" ] || receiver_port=$(get "$job/old/control" receiver)
+    [ -n "$receiver_port" ] || receiver_port=8099
+    if [ "$confirmation_required" = 1 ]; then
+        if [ "$receiver_port" = 8099 ]; then receiver_port=8100; else receiver_port=8099; fi
+        if [ -d "$old_current/__control" ] &&
+            { [ "$(get "$old_current/__control/tunnel" listen)" != "$(get "$compiled/control" listen)" ] ||
+              [ "$(get "$old_current/__control/server" endpoint)" != "$(get "$compiled/servers/$(get "$compiled/control" server)" endpoint)" ]; }; then
+            printf '%s\n' "$old_current/__control" > "$STATE/previous-control"
+        fi
+    fi
+    put receiver "$receiver_port" >> "$CONFIG/control"
+    disabling_control=0
+    if [ "$(get "$compiled/control" enabled)" = false ] && [ -f "$job/old/control" ] && [ "$(get "$job/old/control" enabled)" = true ]; then
+        # Preserve the management path until the submitting handler has written
+        # the successful response. Other activation checks run first.
+        disabling_control=1
+        cp "$CONFIG/control" "$job/disabled-control"
+        cp "$job/old/control" "$CONFIG/control"
+    fi
+    publish_config || exit 1
+    # Only manager replacement needs a supervisor restart. Keeping the receiver
+    # alive lets ordinary PUTs (especially disabling control) receive a reply.
+    if [ -f "$job/manager-new" ] && owned_alive "$STATE/daemon"; then (send_request shutdown) || exit 1; fi
+    (SELF=$installed; ensure_daemon; send_request sync) || exit 1
+    if [ "$confirmation_required" = 1 ]; then
+        printf '%s\n' "$receiver_port" > "$job/receiver"
+        printf '%s\n' "$job" > "$STATE/pending.new.$$"; mv "$STATE/pending.new.$$" "$STATE/pending"
+        activation_status awaiting-confirmation
+        deadline=$(($(date +%s)+60)); failure='confirmation-timeout'
+        while [ ! -f "$job/confirmed" ]; do
+            [ "$(cat "$STATE/latest-job")" = "$job" ] || { failure=superseded; exit 1; }
+            [ "$(date +%s)" -lt "$deadline" ] || exit 1
+            sleep 1
+        done
+    fi
+    # Serialize the final acceptance with submissions and candidate confirmation.
+    saved_lock=$LOCK; lock submission
+    if [ "$(cat "$STATE/latest-job")" != "$job" ]; then unlock; LOCK=$saved_lock; failure=superseded; exit 1; fi
+    cp "$job/input" "$CONFIG/active.ini.new.$$" && mv "$CONFIG/active.ini.new.$$" "$CONFIG/active.ini" || exit 1
+    { put manager_url "$(get "$compiled/manager" url)"; put wstunnel_url "$(get "$compiled/global" url)"; } > "$CONFIG/activation-state.new.$$"
+    mv "$CONFIG/activation-state.new.$$" "$CONFIG/activation-state" || exit 1
+    rm -f "$STATE/pending"
+    if [ -f "$STATE/previous-control" ]; then
+        rm -f "$STATE/previous-control"
+        publish_config || exit 1
+        (send_request sync) || exit 1
+    fi
+    activation_status idle
+    job_result "$job" 'OK 0'
+    if [ "$disabling_control" = 1 ]; then
+        delivered_deadline=$(($(date +%s)+5))
+        while [ ! -f "$job/delivered" ] && [ "$(date +%s)" -lt "$delivered_deadline" ]; do sleep 1; done
+        cp "$job/disabled-control" "$CONFIG/control"
+        publish_config
+        (send_request sync) || :
+    fi
+    cp "$CONFIG/current" "$CONFIG/accepted-current.new.$$" && mv "$CONFIG/accepted-current.new.$$" "$CONFIG/accepted-current" || exit 1
+    unlock; LOCK=$saved_lock; unlock
+    trap - EXIT HUP INT TERM
+}
 help() {
     printf '%s\n' "wtctl $VERSION — wstunnel client manager" \
         '  doctor | menu | status' \
         '  validate FILE  (check a complete INI configuration without applying it)' \
+        '  apply FILE|-  (activate a complete INI configuration; - reads stdin)' \
         '  server add|edit NAME --endpoint wss://HOST [--auth none|path|basic]' \
         '      [--prefix VALUE] [--username USER --password-file FILE] [--ca FILE]' \
         '  server list | server remove NAME' \
@@ -1167,9 +1480,15 @@ prepare
 case "$command" in
     '') if [ -t 0 ] && [ -t 1 ]; then menu; else help; fi;;
     menu) menu;; status) status;;
+    apply) apply_ini "$@";;
+    _receiver) control_receiver "$@";;
+    _handle) control_handle;;
+    _read-control) read_control_request "$@";;
+    _activate) activate_ini "$@";;
     server|tunnel)
         [ "$#" -ge 1 ] || fail 'Specify add, edit, remove or list'
         kind=$command; action=$1; shift
+        if [ -f "$CONFIG/active.ini" ] && [ "$action" != list ]; then fail 'INI-managed installation: use wtctl apply'; fi
         case "$action" in
             list) list_records "${kind}s";;
             add|edit) [ "$#" -ge 1 ] || fail 'Missing name'; if [ "$kind" = server ]; then server_write "$action" "$@"; else tunnel_write "$action" "$@"; fi;;
@@ -1181,7 +1500,7 @@ case "$command" in
     daemon) case "$*" in '') validate_config || exit 1; daemon;; --background) ensure_daemon;; *) fail 'Usage: daemon [--background]';; esac;;
     _worker) worker "$@";; _download) download "$@";;
     _approve) confirm 'Install/update wtctl and enable automatic boot startup?' || exit 1;;
-    _setup) [ "$#" = 2 ] || fail 'Setup is invoked by scripts/install.sh'; setup_binary "$@";;
+    _setup) [ ! -f "$CONFIG/active.ini" ] || fail 'INI-managed installation: use wtctl apply'; [ "$#" = 2 ] || fail 'Setup is invoked by scripts/install.sh'; setup_binary "$@";;
     _ready)
         count=0
         while ! owned_alive "$STATE/daemon"; do

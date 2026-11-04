@@ -87,7 +87,47 @@ try:
         probe(protocol, port)
         print(f"PASS: verified-TLS {protocol} traffic on {port}", flush=True)
     run("status")
-    print("4 real traffic checks passed. Physical OpenWrt qualification is still required.", flush=True)
+    # Seed accepted source identities for the already-provisioned test binaries;
+    # this case tests actual control traffic, not HTTPS download staging.
+    (ROOT / "config/activation-state").write_text(
+        "manager_url=https://example.com/manager\nwstunnel_url=https://example.com/binary\n"
+    )
+    draft = (
+        "[wtctl]\nformat=1\nurl=https://example.com/manager\n"
+        "wstunnel_url=https://example.com/binary\n[control]\n"
+        "server=peer\nbind=127.0.0.1\nlisten=18099\n"
+        "[server peer]\nendpoint=wss://localhost:18443\n"
+        "auth=path\nprefix=test-prefix\nca=/test/ca.pem\n"
+    ).encode()
+    (ROOT / "control.ini").write_bytes(draft)
+    pending = subprocess.check_output([W, "apply", "/test/control.ini"])
+    assert pending == b"PENDING confirmation-required\n", pending
+
+    def control_request(payload):
+        with socket.create_connection(("127.0.0.1", 18099), timeout=5) as client:
+            client.settimeout(30)
+            client.sendall(payload)
+            chunks = []
+            while True:
+                data = client.recv(4096)
+                if not data:
+                    return b"".join(chunks)
+                chunks.append(data)
+
+    for attempt in range(20):
+        try:
+            reply = control_request(f"PUT {len(draft)}\n".encode() + draft)
+            break
+        except OSError:
+            if attempt == 19:
+                raise
+            time.sleep(1)
+    assert reply == b"OK 0\n", reply
+    assert control_request(b"GET ACTIVE\n") == f"OK {len(draft)}\n".encode() + draft
+    disabled = draft.replace(b"[control]\n", b"[control]\nenabled=false\n")
+    assert control_request(f"PUT {len(disabled)}\n".encode() + disabled) == b"OK 0\n"
+    print("PASS: real WSS control confirmation, GET ACTIVE, and remote disable reply", flush=True)
+    print("4 ordinary traffic checks and control stream checks passed. Physical OpenWrt qualification is still required.", flush=True)
 except Exception:
     run("status")
     server_log.flush()

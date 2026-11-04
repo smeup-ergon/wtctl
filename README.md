@@ -191,3 +191,11 @@ make dist           # portable release in dist/
 
 Physical 0.1.0 harnesses are version-gated historical tools, not acceptance
 coverage for 0.2.0. See [design](docs/DESIGN.md) and [operations](docs/OPERATIONS.md).
+
+## Configuration streams (in progress)
+
+Complete INI configurations can be submitted locally with `wtctl apply FILE` or
+`cat FILE | wtctl apply -`, and remotely using plain netcat through the control
+tunnel. See [Netcat control](docs/NETCAT-CONTROL.md) for request framing,
+candidate confirmation, installation, and essential firewall restrictions.
+This path is under qualification; do not treat fixture tests as device approval.

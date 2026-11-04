@@ -23,6 +23,10 @@ EOF
 check() { sh "$ROOT/wtctl" validate "$1" > "$work/output" 2>&1; }
 reject() { if check "$1"; then printf 'Unexpected acceptance: %s\n' "$1" >&2; exit 1; fi; }
 check "$work/good.ini"
+for reserved in __control __previous_control; do
+    sed "s/tunnel ssh/tunnel $reserved/" "$work/good.ini" > "$work/bad.ini"
+    reject "$work/bad.ini"
+done
 for replacement in 'format=2' 'format=1
 format=1' 'format=1
 unknown=yes'; do

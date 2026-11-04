@@ -5,7 +5,7 @@ install_main() {
 set -eu
 umask 077
 usage() {
-    printf 'Usage: install.sh [--yes] [--url HTTPS_RAW_BINARY_URL] [--storage ram|persistent] [--startup openwrt|systemd|sysv] [--ref GIT_REF]\n'
+    printf 'Usage: install.sh [--config FILE] [--yes] [--url HTTPS_RAW_BINARY_URL] [--storage ram|persistent] [--startup openwrt|systemd|sysv] [--ref GIT_REF]\n'
 }
 # stdin contains shell source in curl | sh. Wizard input must come from the tty,
 # but only after the entire function above/below has been parsed by the shell.
@@ -13,6 +13,7 @@ if [ ! -t 0 ] && [ -t 1 ] && (: </dev/tty) 2>/dev/null; then
     exec </dev/tty
 fi
 approved=0
+initial_config=
 adapter=
 storage=
 url=
@@ -21,10 +22,11 @@ explicit_ref=0
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --yes) approved=1;;
-        --url|--storage|--startup|--ref)
+        --config|--url|--storage|--startup|--ref)
             option=$1; shift
             [ "$#" -gt 0 ] || { usage >&2; exit 1; }
             case "$option" in
+                --config) initial_config=$1;;
                 --url) url=$1;;
                 --storage) case "$1" in ram|persistent) storage=$1;; *) usage >&2; exit 1;; esac;;
                 --startup) case "$1" in openwrt|systemd|sysv) adapter=$1;; *) usage >&2; exit 1;; esac;;
@@ -38,6 +40,10 @@ while [ "$#" -gt 0 ]; do
     shift
 done
 [ "$approved" = 1 ] || { [ -t 0 ] && [ -t 1 ]; } || { printf 'Unattended setup requires --yes.\n' >&2; usage >&2; exit 1; }
+if [ -n "$initial_config" ]; then
+    [ -f "$initial_config" ] && [ ! -L "$initial_config" ] || { printf 'Initial configuration must be a regular file.\n' >&2; exit 1; }
+    [ -z "$url" ] && [ -z "$storage" ] || { printf 'Do not combine --config with --url or --storage.\n' >&2; exit 1; }
+fi
 [ "$(id -u)" = 0 ] || { printf 'Run as root.\n' >&2; exit 1; }
 [ -z "${WTCTL_CONFIG_DIR:-}" ] && [ -z "${WTCTL_STATE_DIR:-}" ] || { printf 'Device setup requires default config/state paths.\n' >&2; exit 1; }
 ROOT=
@@ -93,6 +99,16 @@ case "$adapter" in
     sysv) command -v update-rc.d >/dev/null 2>&1 || { printf 'SysV automatic boot registration requires update-rc.d.\n' >&2; exit 1; };;
 esac
 "$TEMP" _check-startup "$adapter"
+if [ -n "$initial_config" ]; then
+    "$TEMP" validate "$initial_config"
+    # Register the boot path before activation. apply establishes bootstrap state;
+    # on failure the accepted fallback remains available for service startup.
+    if [ -f "$TARGET" ]; then "$TARGET" shutdown; fi
+    mv "$TEMP" "$TARGET"
+    "$TARGET" startup enable "$adapter" --yes
+    "$TARGET" apply "$initial_config"
+    exit $?
+fi
 # Run candidate code first: failed downloads leave the installed manager intact.
 "$TEMP" _setup "$storage" "$url"
 # A candidate supervisor must exit before its executable path disappears.
