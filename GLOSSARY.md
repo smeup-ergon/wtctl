@@ -31,3 +31,9 @@ The last successfully activated software source URLs and accepted control settin
 
 **Configuration activation**:
 An attempt to make a desired configuration the device's active configuration. A failed attempt is reported rather than automatically retried; recovery of already accepted software and tunnels is distinct from a new activation attempt.
+
+**Path-prefix secret**:
+A shared secret presented when a device establishes a tunnel with a server. It does not grant or restrict access to a control listener already exposed by that server.
+
+**Device qualification**:
+Evidence that a supported device can install, activate, recover, and maintain its configured connectivity under its actual operating conditions. Simulated recovery alone does not establish device qualification.

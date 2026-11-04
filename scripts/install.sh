@@ -103,11 +103,34 @@ if [ -n "$initial_config" ]; then
     "$TEMP" validate "$initial_config"
     # Register the boot path before activation. apply establishes bootstrap state;
     # on failure the accepted fallback remains available for service startup.
-    if [ -f "$TARGET" ]; then "$TARGET" shutdown; fi
-    mv "$TEMP" "$TARGET"
+    rm -f /tmp/wtctl/install-handoff-complete
+    if [ -f "$TARGET" ]; then
+        # Stop init supervision, not just its child (respawn would race apply).
+        case "$adapter" in
+            systemd) [ ! -f /etc/systemd/system/wtctl.service ] || systemctl stop wtctl;;
+            openwrt|sysv) [ ! -f /etc/init.d/wtctl ] || /etc/init.d/wtctl stop;;
+        esac
+        "$TARGET" shutdown
+        # An existing accepted manager is replaced only by URL-driven activation,
+        # whose coordinator owns its backup/rollback. Do not overwrite it here.
+    else mv "$TEMP" "$TARGET"; fi
     "$TARGET" startup enable "$adapter" --yes
-    "$TARGET" apply "$initial_config"
-    exit $?
+    # apply may return PENDING while an independent coordinator is active.
+    # Transfer supervisor ownership to init only once activation finishes;
+    # stopping it mid-candidate would destroy the confirmation path.
+    result=0
+    apply_output=$TARGET.apply.$$
+    "$TARGET" apply "$initial_config" > "$apply_output" || result=$?
+    cat "$apply_output"
+    pending=0; grep -qx 'PENDING confirmation-required' "$apply_output" && pending=1
+    rm -f "$apply_output"
+    handoff() {
+        "$TARGET" _handoff "$adapter"
+    }
+    if [ "$pending" = 1 ]; then
+        (trap '' HUP; handoff) </dev/null >/tmp/wtctl/install-handoff.log 2>&1 &
+    else handoff; fi
+    exit "$result"
 fi
 # Run candidate code first: failed downloads leave the installed manager intact.
 "$TEMP" _setup "$storage" "$url"

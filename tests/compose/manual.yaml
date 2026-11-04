@@ -1,0 +1,10 @@
+# Opt-in host exposure only. The default lab publishes no ports.
+services:
+  wstunnel:
+    ports:
+      - "127.0.0.1:18099:8099"
+      - "127.0.0.1:18100:8100"
+      - "127.0.0.1:18443:8080"
+  device:
+    ports:
+      - "127.0.0.1:18222:2222"

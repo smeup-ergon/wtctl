@@ -289,16 +289,27 @@ binary_path() {
     else printf '%s\n' "$STATE/bin/wstunnel"; fi
 }
 # Bounded execution without requiring the timeout applet.
+# Stop the parent before walking children so a timed-out request cannot leave
+# an orphan dd holding the socket open or spawn another reader during cleanup.
+kill_tree() (
+    tree_pid=$1; tree_token=$(token "$1")
+    alive "$tree_pid" "$tree_token" || exit 0
+    kill -STOP "$tree_pid" 2>/dev/null || exit 0
+    tree_children=$(cat "/proc/$tree_pid/task/$tree_pid/children" 2>/dev/null || :)
+    for tree_child in $tree_children; do kill_tree "$tree_child"; done
+    alive "$tree_pid" "$tree_token" && kill -KILL "$tree_pid" 2>/dev/null
+    exit 0
+)
 bounded() (
     limit=$1; shift
     exec 3<&0
     "$@" <&3 3<&- & bounded_pid=$!
     exec 3<&-
-    trap 'kill -TERM "$bounded_pid" 2>/dev/null; sleep 1; kill -KILL "$bounded_pid" 2>/dev/null; wait "$bounded_pid" 2>/dev/null; exit 143' TERM INT
+    trap 'kill_tree "$bounded_pid"; wait "$bounded_pid" 2>/dev/null; exit 143' TERM INT
     elapsed=0
     while kill -0 "$bounded_pid" 2>/dev/null; do
         if [ "$elapsed" -ge "$limit" ]; then
-            kill -TERM "$bounded_pid" 2>/dev/null; sleep 1; kill -KILL "$bounded_pid" 2>/dev/null; wait "$bounded_pid" 2>/dev/null; exit 124
+            kill_tree "$bounded_pid"; wait "$bounded_pid" 2>/dev/null; exit 124
         fi
         sleep 1; elapsed=$((elapsed+1))
     done
@@ -367,6 +378,10 @@ worker_cleanup() {
 }
 worker() {
     name=$1; snapshot=$2; executable=$3; work=$STATE/tunnels/$name
+    # Keep metadata relative to the directory inode: control promotion may
+    # rename this runtime slot without restarting its live connection.
+    cd "$work" || exit 1
+    work=.
     restarts=0; last_exit=; child=; next_retry=0; delay=2
     trap 'worker_cleanup' TERM INT
     validate_tunnel "$snapshot/tunnel" && validate_server "$snapshot/server" || fail 'Invalid applied tunnel'
@@ -448,6 +463,14 @@ has_desired() (
     exit 1
 )
 reconcile() {
+    if [ -d "$active/__previous_control" ] && [ -d "$STATE/tunnels/__control" ] &&
+        [ ! -d "$STATE/tunnels/__previous_control" ]; then
+        retained=$(head -n 1 "$STATE/tunnels/__control/snapshot" 2>/dev/null)
+        if cmp -s "$retained/tunnel" "$active/__previous_control/tunnel" &&
+            cmp -s "$retained/server" "$active/__previous_control/server"; then
+            mv "$STATE/tunnels/__control" "$STATE/tunnels/__previous_control" || return 1
+        fi
+    fi
     set +f
     for workdir in "$STATE"/tunnels/*; do
         [ -d "$workdir" ] || continue
@@ -527,6 +550,13 @@ daemon() {
         if [ -d "$active/__control" ]; then
             receiver_port=$(get "$active/__control/tunnel" port)
             if ! owned_alive "$STATE/receiver" || [ "$(get "$STATE/receiver" port)" != "$receiver_port" ]; then
+                if [ -d "$active/__previous_control" ] && owned_alive "$STATE/receiver" &&
+                    [ "$(get "$STATE/receiver" port)" = "$(get "$active/__previous_control/tunnel" port)" ]; then
+                    # Preserve the listening process and its in-flight submitter;
+                    # killing/recreating it can lose the PENDING response.
+                    terminate "$STATE/previous-receiver"
+                    mv "$STATE/receiver" "$STATE/previous-receiver"
+                fi
                 terminate "$STATE/receiver"
                 "$SELF" _receiver "$receiver_port" </dev/null >/dev/null 2>&1 &
                 receiver_pid=$!; record_pid "$STATE/receiver" "$receiver_pid"
@@ -1485,6 +1515,22 @@ case "$command" in
     _handle) control_handle;;
     _read-control) read_control_request "$@";;
     _activate) activate_ini "$@";;
+    _handoff)
+        [ "$#" = 1 ] || fail 'Missing init adapter'
+        case "$1" in sysv|openwrt|systemd) ;; *) fail 'Invalid init adapter';; esac
+        waited=0
+        while [ -d "$STATE/config.lock" ]; do
+            waited=$((waited+1)); [ "$waited" -lt 600 ] || fail 'Init handoff timed out'
+            sleep 1
+        done
+        lock config; trap 'unlock' EXIT
+        "$SELF" shutdown || exit 1
+        case "$1" in
+            systemd) systemctl start wtctl;;
+            *) /etc/init.d/wtctl start;;
+        esac
+        "$SELF" _ready || exit 1
+        : > "$STATE/install-handoff-complete";;
     server|tunnel)
         [ "$#" -ge 1 ] || fail 'Specify add, edit, remove or list'
         kind=$command; action=$1; shift

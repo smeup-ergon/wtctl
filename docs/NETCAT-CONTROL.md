@@ -32,6 +32,13 @@ printf 'STATUS\n' | nc -w 5 SERVER CONTROL_PORT
     nc -w 240 SERVER CONTROL_PORT
 ```
 
+For BusyBox nc over wstunnel v11.1.0, keep sender stdin open until the receiver
+has replied: immediate stdin EOF can tear down the reverse stream before the
+response returns. For example `{ printf 'STATUS\n'; sleep 3; } | nc -w 10 SERVER CONTROL_PORT`.
+Use an appropriately longer hold for PUT/downloads. The Compose acceptance
+operator keeps nc stdin open until the framed response is complete; see
+[COMPOSE-ACCEPTANCE.md](COMPOSE-ACCEPTANCE.md).
+
 Use one request per connection. Headers end in LF, not CRLF. PUT carries exactly
 the declared number of bytes, at most 65536. The header is limited to 128 bytes;
 the entire request must arrive within 15 seconds. Trailing data is not another

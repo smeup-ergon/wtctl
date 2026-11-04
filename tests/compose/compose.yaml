@@ -1,0 +1,114 @@
+x-lab: &lab
+  platform: linux/amd64
+  build:
+    context: ../..
+    dockerfile: tests/compose/Dockerfile
+    target: lab
+  networks: [lab]
+  volumes:
+    - lab:/lab
+
+services:
+  init:
+    <<: *lab
+    build:
+      context: ../..
+      dockerfile: tests/compose/Dockerfile
+      target: artifacts
+    command: [init]
+    restart: "no"
+
+  sources:
+    <<: *lab
+    command: [sources]
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: [CMD, curl, --fail, --silent, --cacert, /lab/ca.pem, "https://sources:8443/health"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  server-target:
+    <<: *lab
+    command: [echo]
+    healthcheck:
+      test: [CMD, python3, -c, "import socket; s=socket.create_connection(('127.0.0.1',17080),2); s.sendall(b'health'); assert s.recv(6)==b'health'; s.close()"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  wstunnel:
+    image: ghcr.io/erebe/wstunnel:v11.1.0
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+    command:
+      - /home/app/wstunnel
+      - server
+      - --tls-certificate
+      - /lab/server.pem
+      - --tls-private-key
+      - /lab/server.key
+      - --restrict-http-upgrade-path-prefix
+      - test-secret-prefix
+      - wss://0.0.0.0:8080
+    networks: [lab]
+    volumes:
+      - lab:/lab:ro
+    depends_on:
+      init:
+        condition: service_completed_successfully
+      server-target:
+        condition: service_healthy
+    healthcheck:
+      # The official image has no lab Python/curl. Acceptance independently
+      # verifies TLS and the upgrade-path gate through the live listener.
+      test: [CMD, /home/app/wstunnel, --version]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  device:
+    <<: *lab
+    user: "0:0"
+    entrypoint: [/bin/sh, /work/tests/compose/device-entrypoint.sh]
+    environment:
+      CURL_CA_BUNDLE: /lab/ca.pem
+    tmpfs:
+      - /tmp:exec,mode=1777
+    depends_on:
+      sources:
+        condition: service_healthy
+      wstunnel:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, python3, -c, "import socket; s=socket.create_connection(('127.0.0.1',17080),2); s.sendall(b'health'); assert s.recv(6)==b'health'; s.close()"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  operator:
+    <<: *lab
+    volumes: []
+    entrypoint: [/bin/sh, -c, "while :; do sleep 3600 & wait $$!; done"]
+    environment:
+      CURL_CA_BUNDLE: /lab/ca.pem
+    depends_on:
+      sources:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, python3, -c, "import os; os.kill(1, 0)"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+networks:
+  lab:
+    internal: true
+
+volumes:
+  lab:

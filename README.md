@@ -199,3 +199,8 @@ Complete INI configurations can be submitted locally with `wtctl apply FILE` or
 tunnel. See [Netcat control](docs/NETCAT-CONTROL.md) for request framing,
 candidate confirmation, installation, and essential firewall restrictions.
 This path is under qualification; do not treat fixture tests as device approval.
+
+Run `make compose-test` for the isolated multi-container acceptance lab using
+the official wstunnel v11.1.0 server image, verified WSS, path-prefix secrets,
+fresh INI installation, and plain netcat control streams. See
+[Compose acceptance](docs/COMPOSE-ACCEPTANCE.md) for topology and manual access.
