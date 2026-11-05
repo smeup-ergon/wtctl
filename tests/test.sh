@@ -89,9 +89,9 @@ od_path=$(command -v od); mv "$od_path" "$od_path.hidden"
 for name in ft fu rt ru; do wait_running "$name"; done
 mv "$od_path.hidden" "$od_path"; mv /usr/bin/curl.hidden /usr/bin/curl
 grep -q 'Local binaries still work' /test/no-curl || fail 'optional curl not reported'
-grep -q 'Control receiver: BusyBox nc' /test/no-curl || fail 'nc capability not reported'
+grep -q 'Control receiver: dropbear' /test/no-curl || fail 'dropbear receiver capability not reported'
 ! grep -q stty /test/no-curl || fail 'stty still checked'
-ok 'existing managed ELF works without curl; hexdump fallback; doctor checks nc, not stty'
+ok 'existing managed ELF works without curl; hexdump fallback; doctor checks the dropbear receiver, not stty'
 
 before=$(head -n 1 /test/config/current)
 cp /test/config/desired.ini /test/desired.saved

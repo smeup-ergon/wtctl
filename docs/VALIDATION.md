@@ -1,5 +1,17 @@
 # Validation and release gates
 
+## 0.3.0 dropbear control receiver
+
+Stock OpenWrt 22.03.4 BusyBox `nc` has no listen mode, so the control receiver is
+a dedicated dropbear instance with a blank-password `wtctl` account
+([ADR 0004](adr/0004-dropbear-control-receiver.md)). `make openwrt-smoke` now
+runs the real receiver on the unmodified OpenWrt 22.03.4 rootfs (STATUS,
+GET ACTIVE, framing rejection, account removal on uninstall). Fixture tests use
+`dbclient`. The Compose operator uses OpenSSH, and the integration test sends
+SSH sessions through a real wstunnel reverse tunnel. Account lifecycle coverage:
+added on enable, removed on disable and uninstall, foreign `wtctl` account
+rejected unchanged.
+
 ## 0.3.0 configuration-only management
 
 Interactive menus, prompts, the `server`/`tunnel` commands and installer flags
@@ -8,7 +20,7 @@ The fixture suite now drives every lifecycle check through complete INI
 configurations and `wtctl apply`, and covers the no-parameter installer (sample
 placeholders rejected, rerun refused, missing init system refused, streamed
 truncation/failure), `uninstall` removing boot integration, legacy record-only
-rejection and the doctor `nc` check. The Compose installer matrix asserts that a
+rejection and the doctor receiver check. The Compose installer matrix asserts that a
 manager-replacing apply keeps the init-started supervisor PID on SysV, OpenWrt
 and systemd shims. Sections below describe earlier releases; their menu and
 installer-flag coverage no longer applies. No physical 0.3.0 acceptance is

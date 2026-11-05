@@ -62,8 +62,9 @@ qualification.
 - `sources`: verified HTTPS software source serving the checkout manager and
   checksum-verified static executable from the upstream v11.1.0 release. Records real requests and serves
   controlled invalid/unavailable artifacts.
-- `operator`: plain BusyBox `nc` sends protocol streams to forwarded listeners
-  on `wstunnel`, never directly to the device loopback receiver.
+- `operator`: plain OpenSSH `ssh` (no keys) sends protocol streams to forwarded
+  listeners on `wstunnel`, never directly to the device loopback receiver. The
+  device runs Alpine's `dropbear` as the control receiver.
 - `server-target` and the device's echo targets: separate TCP/UDP traffic endpoints.
 - `init`: generates an ephemeral CA, DNS-valid server certificate, and download
   artifacts. These are test secrets, not production credentials.
@@ -102,7 +103,7 @@ fail candidate confirmation and roll back. TLS verification remains enabled.
 **A path-prefix secret authenticates tunnel establishment, not users reaching a
 forwarded listener.** Never publish the control port to an untrusted network.
 
-## Manual netcat experiments
+## Manual control experiments
 
 Use a different project from automated tests:
 
@@ -131,19 +132,13 @@ docker compose -p wtctl-manual -f tests/compose/compose.yaml \
 Set the remote control bind to `0.0.0.0` and listen to `8099`. On PENDING, confirm:
 
 ```sh
-{ printf 'PUT %s\n' "$(wc -c < device.ini | tr -d ' ')"; cat device.ini; sleep 10; } |
-  nc -w 240 127.0.0.1 18099
-{ printf 'GET ACTIVE\n'; sleep 3; } | nc -w 10 127.0.0.1 18099
+SSH='ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -o LogLevel=ERROR'
+{ printf 'PUT %s\n' "$(wc -c < device.ini | tr -d ' ')"; cat device.ini; } | $SSH -p 18099 wtctl@127.0.0.1
+printf 'GET ACTIVE\n' | $SSH -p 18099 wtctl@127.0.0.1
 ```
 
-Keep the sender's input open long enough to receive the response. BusyBox nc
-with stdin already at EOF can close a wstunnel v11.1.0 reverse stream before
-the response arrives. The automated operator keeps stdin open until the
-length-framed response is complete; it still transmits using the real nc
-executable, not a replacement socket client. For a slow download/application,
-use a longer input-hold interval than the confirmation example above. Desktop
-netcat variants may provide their own half-close/EOF options; do not assume they
-match BusyBox behavior.
+SSH keeps the session open until the receiver's response ends, so there is no
+need to hold stdin open.
 
 The installer starts the idle service through the detected init adapter before
 any configuration is applied, so every apply (including manager replacement,

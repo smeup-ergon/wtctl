@@ -108,24 +108,16 @@ try:
     assert pending == b"PENDING confirmation-required\n", pending
 
     def control_request(payload):
-        with socket.create_connection(("127.0.0.1", 18099), timeout=5) as client:
-            client.settimeout(30)
-            client.sendall(payload)
-            chunks = []
-            while True:
-                data = client.recv(4096)
-                if not data:
-                    return b"".join(chunks)
-                chunks.append(data)
+        # Plain unauthenticated SSH session to the server-side forwarded port.
+        result = subprocess.run(["dbclient", "-y", "-y", "-T", "-p", "18099", "wtctl@127.0.0.1", "x"],
+                                input=payload, capture_output=True, timeout=60)
+        return result.stdout
 
     for attempt in range(20):
-        try:
-            reply = control_request(f"PUT {len(draft)}\n".encode() + draft)
+        reply = control_request(f"PUT {len(draft)}\n".encode() + draft)
+        if reply:
             break
-        except OSError:
-            if attempt == 19:
-                raise
-            time.sleep(1)
+        time.sleep(1)
     assert reply == b"OK 0\n", reply
     assert control_request(b"GET ACTIVE\n") == f"OK {len(draft)}\n".encode() + draft
     disabled = base.replace("ENABLED", "enabled=false\n").encode()

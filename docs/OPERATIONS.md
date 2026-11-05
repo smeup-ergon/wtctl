@@ -5,7 +5,7 @@
 1. Do not flash firmware, replace feeds or remove packages to make room.
 2. Provision curl HTTPS and CA trust explicitly. Run `wtctl doctor` (or
    `sh wtctl doctor` from a release) to inspect the shell/applet baseline,
-   mounted `/proc` and the BusyBox `nc` receiver; it never installs dependencies.
+   mounted `/proc` and the dropbear control receiver; it never installs dependencies.
 3. Select a trusted raw executable matching CPU, endianness, ISA and ABI/libc.
    A matching ELF header does not establish complete compatibility.
 4. As root, run the installer (trust/inspect the downloaded code first):
@@ -32,12 +32,16 @@
 
 Non-loopback binds expose listeners. For reverse mode this exposure is on the
 remote server; secure that server yourself. The default tunnel bind is loopback.
-The control listener is exposed on the server: **firewall it**.
+The control listener is exposed on the server without authentication:
+**firewall it**. While control is enabled, the device has a blank-password,
+root-equivalent `wtctl` account accepted only by the control receiver;
+`KO control-unavailable` means dropbear is missing or another `wtctl` account
+exists.
 
 ## Changing configuration and updating
 
 Edit `/etc/wtctl/wtctl.ini` (or any file) and run `wtctl apply FILE`, or send a
-`PUT` through the control tunnel ([NETCAT-CONTROL.md](NETCAT-CONTROL.md)). Both
+`PUT` through the control tunnel with `ssh` ([CONTROL.md](CONTROL.md)). Both
 use the same validation and activation path. Software updates are URL changes:
 set a new `url=` or `wstunnel_url=` (a changed query string counts) and apply.
 
@@ -50,7 +54,7 @@ SIGKILL or power loss is not a crash-atomic transaction guarantee.
 
 ## Maintenance and troubleshooting
 
-- `wtctl doctor`: platform, utilities, download and `nc` receiver capabilities,
+- `wtctl doctor`: platform, utilities, download and dropbear receiver capabilities,
   and boot registration. Unmanaged paths are not executed; missing query tools or
   inaccessible data report unknown. Boot registration is not traffic health.
 - `wtctl status`: supervisor/binary phase, child state/PID, last exit, restart

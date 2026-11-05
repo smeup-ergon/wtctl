@@ -14,7 +14,6 @@ case "${1:-}" in ''|--integration|--all) ;; *) printf 'Usage: tests/run.sh [--in
 # not evidence of CPU/ABI compatibility on any physical device.
 docker build --platform linux/amd64 -f tests/Dockerfile -t wtctl-tests:local .
 docker run --rm --platform linux/amd64 -v "$ROOT:/work:ro" --entrypoint /bin/sh wtctl-tests:local /work/tests/config-ini.sh
-docker run --rm --platform linux/amd64 -v "$ROOT:/work:ro" --entrypoint /bin/sh wtctl-tests:local /work/tests/netcat-baseline.sh
 docker run --rm --platform linux/amd64 -v "$ROOT:/work:ro" --entrypoint /bin/sh wtctl-tests:local /work/tests/control-timeout.sh
 docker run --rm --platform linux/amd64 -v "$ROOT:/work:ro" --entrypoint /bin/sh wtctl-tests:local /work/tests/control-config.sh
 if [ "${1:-}" != --integration ]; then docker run --rm --platform linux/amd64 -v "$ROOT:/work:ro" wtctl-tests:local; fi

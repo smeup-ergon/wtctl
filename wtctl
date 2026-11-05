@@ -840,14 +840,12 @@ doctor() {
     fi
     control_required=0
     [ "$(get "$CONFIG/control" enabled)" != true ] || control_required=1
-    nc_help=$(nc --help </dev/null 2>&1 || :)
-    if command -v nc >/dev/null 2>&1 && printf '%s\n' "$nc_help" | grep -q -- '-lk' &&
-        printf '%s\n' "$nc_help" | grep -q -- '-e PROG' && printf '%s\n' "$nc_help" | grep -q -- '-s ADDR'; then
-        printf 'Control receiver: BusyBox nc with -lk -s -p -e\n'
+    if receiver_available; then
+        printf 'Control receiver: dropbear %s\n' "$(dropbear -V 2>&1 | awk '{print $2; exit}')"
     elif [ "$control_required" = 1 ]; then
-        printf 'Missing: BusyBox nc with -lk -s -p -e (required by enabled control)\n'; missing=1
+        printf 'Missing: dropbear and dropbearkey (required by enabled control)\n'; missing=1
     else
-        printf 'Control receiver unavailable: BusyBox nc with -lk -s -p -e missing (needed only when control is enabled)\n'
+        printf 'Control receiver unavailable: dropbear missing (needed only when control is enabled)\n'
     fi
     [ -d /proc/self ] || { printf 'Missing: mounted Linux /proc\n'; missing=1; }
     boot_report
@@ -989,7 +987,7 @@ job_result() {
     printf '%s\n' "$2" > "$1/result.new.$$"
     mv "$1/result.new.$$" "$1/result"
 }
-# An nc exec handler receives one bounded header and, for PUT, exact bytes.
+# A dropbear forced command receives one bounded header and, for PUT, exact bytes.
 # Shell read consumes a socket byte-wise, so it never takes body bytes; the
 # capped form avoids several processes per header byte on slow devices.
 # shellcheck disable=SC3045 # feature-probed below; POSIX fallback otherwise
@@ -1021,15 +1019,51 @@ read_control_request() {
         *) return 1;;
     esac
 }
+# The receiver account: root-equivalent, blank password, accepted only by
+# receivers (-B). Only an entry carrying RECEIVER_GECOS is ever changed.
+RECEIVER_USER=wtctl
+RECEIVER_GECOS='wtctl control receiver'
+receiver_available() { command -v dropbear >/dev/null 2>&1 && command -v dropbearkey >/dev/null 2>&1; }
+receiver_shell() {
+    shell=$(awk '/^\//{print; exit}' /etc/shells 2>/dev/null)
+    printf '%s\n' "${shell:-/bin/sh}"
+}
+account_owned() { awk -F: -v u="$RECEIVER_USER" -v g="$RECEIVER_GECOS" '$1==u && $5==g {found=1} END {exit !found}' /etc/passwd; }
+account_foreign() { awk -F: -v u="$RECEIVER_USER" -v g="$RECEIVER_GECOS" '$1==u && $5!=g {found=1} END {exit !found}' /etc/passwd; }
+account_add() {
+    ! account_foreign || return 1
+    account_owned && return 0
+    cp -p /etc/passwd /etc/passwd.wtctl.$$ || return 1
+    printf '%s::0:0:%s:/:%s\n' "$RECEIVER_USER" "$RECEIVER_GECOS" "$(receiver_shell)" >> /etc/passwd.wtctl.$$ &&
+        mv /etc/passwd.wtctl.$$ /etc/passwd || { rm -f /etc/passwd.wtctl.$$; return 1; }
+    event "receiver account added"
+}
+account_remove() {
+    account_owned || return 0
+    cp -p /etc/passwd /etc/passwd.wtctl.$$ || return 1
+    awk -F: -v u="$RECEIVER_USER" -v g="$RECEIVER_GECOS" '!($1==u && $5==g)' /etc/passwd > /etc/passwd.wtctl.$$ &&
+        mv /etc/passwd.wtctl.$$ /etc/passwd || { rm -f /etc/passwd.wtctl.$$; return 1; }
+    event "receiver account removed"
+}
+# Account presence follows accepted control. Call under the config lock.
+account_sync() {
+    if [ "$(get "$CONFIG/control" enabled 2>/dev/null)" = true ]; then account_add; else account_remove; fi
+}
+host_key() {
+    [ -s "$CONFIG/control_host_key" ] && return 0
+    rm -f "$CONFIG/control_host_key.new.$$"
+    dropbearkey -t ed25519 -f "$CONFIG/control_host_key.new.$$" >/dev/null 2>&1 &&
+        mv "$CONFIG/control_host_key.new.$$" "$CONFIG/control_host_key"
+}
 control_receiver() {
     port "$1" || fail 'Invalid receiver port'
-    export WTCTL_RECEIVER_PORT="$1"
-    handler=$STATE/handler-$1
-    # SELF is not interpolated into shell source; paths remain literal data.
-    printf '#!/bin/sh\nexec "$WTCTL_HANDLER_SELF" _handle\n' > "$handler"
-    chmod 700 "$handler"
-    export WTCTL_HANDLER_SELF="$SELF"
-    exec nc -lk -s 127.0.0.1 -p "$1" -e "$handler"
+    receiver_available || fail 'dropbear and dropbearkey are required for control'
+    host_key || fail 'Cannot create control host key'
+    export WTCTL_RECEIVER_PORT="$1" WTCTL_HANDLER_SELF="$SELF"
+    # -e passes this environment to the forced command; paths stay literal data.
+    # -E with stderr discarded keeps per-connection logs out of syslog.
+    exec dropbear -F -E -e -B -j -k -T 1 -I 300 -r "$CONFIG/control_host_key" -P "$STATE/receiver-$1.pid" \
+        -c 'exec "$WTCTL_HANDLER_SELF" _handle' -p "127.0.0.1:$1" 2>/dev/null
 }
 control_handle() (
     handle_started=$(cut -d' ' -f1 /proc/uptime 2>/dev/null)
@@ -1115,6 +1149,7 @@ activate_rollback() {
         for record in servers tunnels; do
             rm -rf "${CONFIG:?}/${record:?}"; cp -R "$job/old/$record" "$CONFIG/$record"
         done
+        account_sync || :
         for software in manager binary; do
             destination=$(cat "$job/$software-path" 2>/dev/null || :)
             [ -n "$destination" ] || continue
@@ -1170,6 +1205,10 @@ activate_ini() {
             cmp -s "$compiled/servers/$(get "$compiled/control" server)" "$CONFIG/servers/$(get "$CONFIG/control" server)" || confirmation_required=1
         fi
     fi
+    if [ "$(get "$compiled/control" enabled)" = true ]; then
+        failure=control-unavailable
+        receiver_available && ! account_foreign && (host_key) || exit 1
+    fi
     binary_destination=$(binary_path "$compiled/global")
     if [ "$(get "$compiled/global" url)" != "$(get "$CONFIG/activation-state" wstunnel_url)" ] || ! validate_binary "$binary_destination"; then
         failure=download-failed
@@ -1210,6 +1249,9 @@ activate_ini() {
         fi
     fi
     put receiver "$receiver_port" >> "$CONFIG/control"
+    if [ "$(get "$compiled/control" enabled)" = true ]; then
+        failure=control-unavailable; account_add || exit 1; failure=activation-failed
+    fi
     disabling_control=0
     if [ "$(get "$compiled/control" enabled)" = false ] && [ -f "$job/old/control" ] && [ "$(get "$job/old/control" enabled)" = true ]; then
         # Preserve the management path until the submitting handler has written
@@ -1254,6 +1296,7 @@ activate_ini() {
         cp "$job/disabled-control" "$CONFIG/control"
         publish_config
         (send_request sync) || :
+        account_remove || :
     fi
     cp "$CONFIG/current" "$CONFIG/accepted-current.new.$$" && mv "$CONFIG/accepted-current.new.$$" "$CONFIG/accepted-current" || exit 1
     unlock; LOCK=$saved_lock; unlock
@@ -1303,6 +1346,7 @@ case "$command" in
         purge=0; case "$*" in --yes) ;; '--purge --yes'|'--yes --purge') purge=1;; *) fail 'Usage: uninstall [--purge] --yes';; esac
         uninstall_startup
         "$SELF" shutdown || exit 1
+        account_remove || fail 'Cannot remove the wtctl receiver account'
         rm -rf "$STATE"; [ "$purge" = 0 ] || rm -rf "$CONFIG"
         [ "$SELF" != /usr/sbin/wtctl ] || rm -f "$SELF"
         printf 'Uninstalled; configuration preserved unless --purge was requested.\n';;

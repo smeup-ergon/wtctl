@@ -3,7 +3,7 @@
 A small, root-operated **POSIX-shell wstunnel client manager** for Linux.
 One complete INI configuration describes the device: software sources, servers,
 tunnels and an optional remote control tunnel. It is applied locally with
-`wtctl apply` or remotely with plain netcat. No LuCI, UCI, rpcd, Bash, Python,
+`wtctl apply` or remotely with plain `ssh`. No LuCI, UCI, rpcd, Bash, Python,
 jq or dialog is required at runtime.
 
 **0.3.0 is a development release.** INI management has not been qualified on
@@ -98,25 +98,30 @@ without retrying it, including after reboot. Resubmit to retry.
 ## Remote control
 
 With `[control] enabled=true` the device keeps a reverse tunnel to the server,
-and configuration is read or replaced with plain netcat through the server's
-forwarded port:
+and configuration is read or replaced with plain `ssh` through the server's
+forwarded port. No keys or passwords are involved:
 
 ```sh
-printf 'GET ACTIVE\n' | nc -w 5 SERVER 8099
-{ printf 'PUT %s\n' "$(wc -c < device.ini | tr -d ' ')"; cat device.ini; } | nc -w 240 SERVER 8099
+SSH='ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -o LogLevel=ERROR'
+printf 'GET ACTIVE\n' | $SSH -p 8099 wtctl@SERVER
+{ printf 'PUT %s\n' "$(wc -c < device.ini | tr -d ' ')"; cat device.ini; } | $SSH -p 8099 wtctl@SERVER
 ```
+
+The device receives through a dedicated loopback dropbear instance (standard on
+OpenWrt). While control is enabled it keeps a blank-password, root-equivalent
+`wtctl` account that only that receiver accepts.
 
 Enabling control, changing control connectivity or changing a software URL while
 control is enabled returns `PENDING confirmation-required`: send the identical
 bytes again through the new control path within 60 seconds to confirm it.
 **There is no application authentication: restrict the server-side port with a
-firewall.** See [Netcat control](docs/NETCAT-CONTROL.md).
+firewall.** See [Remote control](docs/CONTROL.md).
 
 ## Commands
 
 ```text
 wtctl status                  supervisor, binary, tunnel and control state
-wtctl doctor                  platform, utilities, nc receiver and boot checks
+wtctl doctor                  platform, utilities, control receiver and boot checks
 wtctl validate FILE           offline validation; changes nothing
 wtctl apply FILE|-            activate a complete configuration (- reads stdin)
 wtctl uninstall [--purge] --yes
@@ -130,7 +135,7 @@ service (`/etc/init.d/wtctl stop` or `systemctl stop wtctl`).
 Linux, mounted `/proc`, root, POSIX `sh`, and basic utilities (normally BusyBox):
 `awk grep tr id ls chmod mkdir rm mv cp dirname basename date sleep head cmp dd
 wc df uname cut`, plus `od` or `hexdump`. Downloads need **curl with HTTPS and
-CA trust**; the control receiver needs BusyBox `nc` with `-lk -s -p -e`.
+CA trust**; remote control needs `dropbear` and `dropbearkey` (standard on OpenWrt).
 `wtctl doctor` reports these and never installs dependencies.
 
 Binary checks compare ELF class/endianness/machine with `/bin/sh` and run a
@@ -164,8 +169,8 @@ migrated: uninstall them with `--purge` and reinstall.
 make check          # syntax, ShellCheck, Python helpers
 make test           # BusyBox lifecycle, downloads, control streams, installer
 make integration    # real wstunnel v11, verified TLS, forward/reverse TCP/UDP
-make compose-test   # multi-container acceptance lab with netcat control
-make openwrt-smoke  # OpenWrt userland/adapter registration, not a boot test
+make compose-test   # multi-container acceptance lab with ssh control
+make openwrt-smoke  # OpenWrt userland, adapters and stock-dropbear receiver; not a boot test
 make dist           # portable release in dist/
 ```
 

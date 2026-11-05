@@ -21,6 +21,10 @@ An ordinary forwarding tunnel declared in the desired configuration, maintained 
 **Control tunnel**:
 A dedicated tunnel for remotely submitting and retrieving the device's desired configuration. It is managed separately from ordinary managed tunnels, is enabled by default, and can be explicitly disabled.
 
+**Control receiver**:
+The device-side loopback listener that executes one control request per connection. Each receiver is a dedicated dropbear instance accepting only the blank-password receiver account, which exists only while control is enabled. It is not an authentication boundary.
+_Avoid_: Control server, SSH access
+
 **Accepted control settings**:
 The control connectivity settings retained after their connection has succeeded, distinct from an unconfirmed replacement in the desired configuration.
 

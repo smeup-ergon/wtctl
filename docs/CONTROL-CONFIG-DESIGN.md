@@ -2,8 +2,8 @@
 
 Status: implemented in 0.3.0; physical qualification outstanding. Interactive and per-record management were removed ([ADR 0003](adr/0003-remove-interactive-and-record-management.md)).
 
-Implementation and operator instructions: [NETCAT-CONTROL.md](NETCAT-CONTROL.md).
-The remote sender is plain netcat, not a dedicated management application.
+Implementation and operator instructions: [CONTROL.md](CONTROL.md).
+The remote sender is plain `ssh` without keys, not a dedicated management application. The receiver is a loopback dropbear instance ([ADR 0004](adr/0004-dropbear-control-receiver.md)).
 
 ## Scope
 
@@ -116,7 +116,7 @@ Request headers terminate with a newline. Configuration responses carry a byte c
 
 After `PENDING`, the tool connects through the candidate and submits identical bytes; that connection receives the final result. The original connection may disappear. Reconnect and use status/configuration reads to resolve uncertainty; repeating a failed desired configuration explicitly retries it.
 
-Maximum configuration size is 64 KiB. Request-read timeout is 15 seconds. Each download has a 180-second deadline and 20-second connect timeout; draft download failures are reported without automatic retry. Response framing, status payload grammar, and reason codes are specified in [NETCAT-CONTROL.md](NETCAT-CONTROL.md), without additional protocol operations.
+Maximum configuration size is 64 KiB. Request-read timeout is 15 seconds. Each download has a 180-second deadline and 20-second connect timeout; draft download failures are reported without automatic retry. Response framing, status payload grammar, and reason codes are specified in [CONTROL.md](CONTROL.md), without additional protocol operations.
 
 ## Concurrent submissions
 
@@ -149,3 +149,5 @@ The sample contains `REPLACE-ME` placeholders, which validation rejects. The fir
 ## Implementation feasibility gate
 
 The current shell program has no network request receiver. Before building, verify a bounded loopback TCP listener and bidirectional protocol implementation against the existing supported BusyBox/POSIX environment. Do not silently assume a particular `nc`/`inetd` variant or add a dependency. If the existing baseline cannot provide the receiver, bring that constraint back for a decision rather than changing the agreed dependency policy.
+
+Outcome: stock OpenWrt BusyBox `nc` cannot listen. The receiver uses dropbear, which is part of the OpenWrt base system ([ADR 0004](adr/0004-dropbear-control-receiver.md)); other Linux systems need dropbear installed for remote control.

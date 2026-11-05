@@ -106,8 +106,20 @@ unmanaged ones.
 Doctor does not initialize state or execute init scripts. OpenWrt/SysV boot links
 are inspected (readlink optional); systemd uses is-enabled. Missing tools,
 permissions or unrecognized data report unknown, not enabled. Boot registration
-is distinct from process state or actual connectivity. The BusyBox `nc`
-receiver capability is required only while control is enabled.
+is distinct from process state or actual connectivity. The dropbear receiver
+capability is required only while control is enabled.
+
+## Control receiver
+
+Each receiver port is a dedicated dropbear instance on IPv4 loopback with a
+forced `wtctl _handle` command, forwarding disabled and only blank-password
+logins accepted ([ADR 0004](adr/0004-dropbear-control-receiver.md)). It logs in
+through a wtctl-owned `wtctl` account with root's user ID, which exists only
+while control is accepted as enabled. Activation and rollback add or remove it
+under the configuration lock, editing only the entry marked
+`wtctl control receiver`. The receiver host key lives in
+`/etc/wtctl/control_host_key`. Per-connection dropbear output is discarded;
+wtctl's event trail records requests.
 
 ## Deliberate exclusions
 

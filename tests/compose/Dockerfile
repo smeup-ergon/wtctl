@@ -1,5 +1,5 @@
 FROM alpine:3.21 AS lab
-RUN apk add --no-cache ca-certificates curl iproute2-tc openssl python3 \
+RUN apk add --no-cache ca-certificates curl dropbear iproute2-tc openssh-client openssl python3 \
     && mkdir -p /etc/init.d \
     && printf '%s\n' '#!/bin/sh' \
        '# Test-only registration recorder, not an init implementation.' \

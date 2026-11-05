@@ -1,4 +1,4 @@
-"""Cross-container acceptance tests. All remote configuration traffic uses nc.
+"""Cross-container acceptance tests. All remote configuration traffic uses plain ssh.
 
 Run through run.sh, never against a production Compose project.
 """
@@ -13,6 +13,8 @@ COMPOSE = ["docker", "compose", "-p", os.environ["WTCTL_TEST_PROJECT"]] + (
     os.environ["WTCTL_COMPOSE_FILES"].split() if os.environ.get("WTCTL_COMPOSE_FILES")
     else ["-f", str(Path(__file__).with_name("compose.yaml"))])
 CHECKS = 0
+SSH = ["-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
+       "-o", "BatchMode=yes", "-o", "LogLevel=ERROR", "-o", "ConnectTimeout=10"]
 
 
 def compose(*args, data=None, check=True, timeout=300):
@@ -109,30 +111,9 @@ def install(config):
 
 
 def remote(payload, port=8099, timeout=240):
-    # No Python socket implementation stands in for the operator's nc.
-    # Keep nc stdin open until the one-request receiver closes its response;
-    # EOF/half-close before the reply can tear down a WSS reverse stream.
-    driver = """import signal,subprocess,sys
-signal.signal(signal.SIGALRM,lambda *_: (_ for _ in ()).throw(TimeoutError('nc response deadline')))
-signal.alarm(int(sys.argv[2]))
-p=subprocess.Popen(['nc','-w',sys.argv[2],'wstunnel',sys.argv[1]],stdin=subprocess.PIPE,stdout=subprocess.PIPE)
-try:
- p.stdin.write(sys.stdin.buffer.read()); p.stdin.flush()
- header=p.stdout.readline(); sys.stdout.buffer.write(header)
- if header.startswith(b'OK '):
-  remaining=int(header[3:]); body=b''
-  while remaining:
-   part=p.stdout.read(remaining)
-   if not part: break
-   body+=part; remaining-=len(part)
-  sys.stdout.buffer.write(body)
-finally:
- p.stdin.close()
- try: p.wait(timeout=2)
- except subprocess.TimeoutExpired: p.terminate(); p.wait(timeout=5)
-"""
-    return execute("operator", "python3", "-c", driver, str(port), str(timeout),
-                   data=payload, check=False, timeout=timeout + 20).stdout
+    # The documented operator command: unauthenticated OpenSSH, no keys.
+    return execute("operator", "timeout", str(timeout), "ssh", *SSH, "-p", str(port),
+                   "wtctl@wstunnel", data=payload, check=False, timeout=timeout + 20).stdout
 
 
 def put(config, port=8099, timeout=240):
@@ -296,7 +277,7 @@ def main():
     accepted(initial)
     traffic()
     assert get("GET") == initial
-    passed("fresh enabled-control install and identical-byte confirmation through server using nc")
+    passed("fresh enabled-control install and identical-byte confirmation through server using ssh")
 
     compose("restart", "device")
     eventually(lambda: get() == initial, "control after init-started service restart", seconds=120)
@@ -332,17 +313,19 @@ def main():
     assert time.monotonic() - started < 22, "request remained open beyond server read deadline"
     assert shell("ps -ef | grep '[d]d bs=1'", check=False).returncode != 0, "orphan socket reader"
     accepted(edited)
-    passed("oversized and incomplete nc streams rejected without changing active state")
+    passed("oversized and incomplete ssh streams rejected without changing active state")
 
     fragmented = edited + b"# fragmented request\n"
     framed = f"PUT {len(fragmented)}\n".encode() + fragmented
     # Separate writes and a delay force the receiver to handle socket short reads.
-    script = "import subprocess,sys,time; p=subprocess.Popen(['nc','-w','60','wstunnel','8099'],stdin=subprocess.PIPE,stdout=subprocess.PIPE); data=sys.stdin.buffer.read(); p.stdin.write(data[:40]); p.stdin.flush(); time.sleep(1); p.stdin.write(data[40:]); p.stdin.flush(); sys.stdout.buffer.write(p.stdout.readline()); p.stdin.close(); p.terminate(); p.wait(timeout=5)"
-    reply = execute("operator", "python3", "-c", script, data=framed).stdout
+    script = ("import subprocess,sys,time; p=subprocess.Popen(['ssh',*sys.argv[1:],'-p','8099','wtctl@wstunnel'],stdin=subprocess.PIPE,stdout=subprocess.PIPE); "
+              "data=sys.stdin.buffer.read(); p.stdin.write(data[:40]); p.stdin.flush(); time.sleep(1); p.stdin.write(data[40:]); p.stdin.close(); "
+              "sys.stdout.buffer.write(p.stdout.readline()); p.wait(timeout=60)")
+    reply = execute("operator", "python3", "-c", script, *SSH, data=framed).stdout
     assert reply == b"OK 0\n", reply
     accepted(fragmented)
     edited = fragmented
-    passed("fragmented byte-counted nc stream is accepted without truncation")
+    passed("fragmented byte-counted ssh stream is accepted without truncation")
 
     # Wrong prefix is valid configuration but must not establish a candidate.
     wrong = draft(prefix="wrong-secret", control_port=8100)
@@ -379,7 +362,7 @@ def main():
     assert get() == maximum
     accepted(maximum)
     assert put(edited) == b"OK 0\n"
-    passed("maximum 64 KiB configuration traverses nc and returns exact framed bytes")
+    passed("maximum 64 KiB configuration traverses ssh and returns exact framed bytes")
 
     # Negative trust check: a valid INI can select a readable but untrusted CA.
     # It must fail reachability rather than silently disabling verification.
@@ -531,7 +514,9 @@ def main():
     accepted(off)
     eventually(lambda: device("sh", "-c", "test ! -f /tmp/wtctl/receiver || ! kill -0 $(sed -n 's/^pid=//p' /tmp/wtctl/receiver)", check=False).returncode == 0,
                "receiver removal after disable")
-    passed("remote disabling returns success before removing management connectivity")
+    eventually(lambda: shell("grep -q '^wtctl:' /etc/passwd", check=False).returncode != 0,
+               "receiver account removal after disable")
+    passed("remote disabling returns success before removing management connectivity and account")
 
     # Fresh bootstrap failures and retry semantics, not only failure on upgrades.
     reset_device()
