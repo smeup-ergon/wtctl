@@ -1,0 +1,8 @@
+# Adverse-conditions override for the acceptance lab. Used by
+# `make stress-test`; never combine with a manual project.
+services:
+  device:
+    cpus: "${WTCTL_STRESS_CPUS:-0.3}"
+    cap_add: [NET_ADMIN]
+    environment:
+      WTCTL_LAB_NETEM: "${WTCTL_STRESS_NETEM:-delay 40ms 30ms loss 1%}"

@@ -2,3 +2,4 @@ dist
 .git
 __pycache__
 *.pyc
+tests/compose/artifacts

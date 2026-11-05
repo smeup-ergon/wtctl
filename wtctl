@@ -11,6 +11,14 @@ STATE=${WTCTL_STATE_DIR:-/tmp/wtctl}
 SELF=$(CDPATH='' cd -- "$(dirname -- "$0")" && printf '%s/%s' "$(pwd)" "$(basename -- "$0")")
 
 fail() { printf 'wtctl: %s\n' "$*" >&2; exit 1; }
+# Bounded diagnostic trail of lifecycle transitions; the supervisor rotates it.
+event() {
+    [ -d "$STATE" ] || return 0
+    printf '%s %s %s %s\n' "$(date +%s)" "$(cut -d' ' -f1 /proc/uptime 2>/dev/null)" "$$" "$*" >> "$STATE/events" 2>/dev/null || :
+}
+rotate_events() {
+    [ "$(wc -c < "$STATE/events" 2>/dev/null || printf 0)" -le 262144 ] || mv -f "$STATE/events" "$STATE/events.1" 2>/dev/null || :
+}
 valid_id() { case "$1" in ''|all|global|*[!A-Za-z0-9_-]*) return 1;; esac; [ ${#1} -le 64 ]; }
 single_line() { [ "$(printf '%s' "$1" | tr -d '\r\n')" = "$1" ]; }
 get() { awk -v key="$2" 'index($0,key "=")==1 {print substr($0,length(key)+2); exit}' "$1" 2>/dev/null; }
@@ -300,20 +308,29 @@ kill_tree() (
     alive "$tree_pid" "$tree_token" && kill -KILL "$tree_pid" 2>/dev/null
     exit 0
 )
+# A watchdog enforces the limit so a fast command returns at once rather than
+# at the next one-second poll; every control request passes through here.
 bounded() (
     limit=$1; shift
     exec 3<&0
+    marker=$(mktemp "${TMPDIR:-/tmp}/wtctl-bounded.XXXXXXXX") || exit 1
     "$@" <&3 3<&- & bounded_pid=$!
     exec 3<&-
-    trap 'kill_tree "$bounded_pid"; wait "$bounded_pid" 2>/dev/null; exit 143' TERM INT
-    elapsed=0
-    while kill -0 "$bounded_pid" 2>/dev/null; do
-        if [ "$elapsed" -ge "$limit" ]; then
-            kill_tree "$bounded_pid"; wait "$bounded_pid" 2>/dev/null; exit 124
-        fi
-        sleep 1; elapsed=$((elapsed+1))
-    done
-    wait "$bounded_pid"
+    bounded_token=$(token "$bounded_pid")
+    (
+        sleep "$limit" & timer=$!
+        trap 'kill "$timer" 2>/dev/null; exit 0' TERM
+        wait "$timer"
+        alive "$bounded_pid" "$bounded_token" || exit 0
+        printf expired > "$marker"; kill_tree "$bounded_pid"
+    ) </dev/null >/dev/null 2>&1 &
+    watchdog=$!
+    trap 'kill "$watchdog" 2>/dev/null; kill_tree "$bounded_pid"; wait "$bounded_pid" 2>/dev/null; rm -f "$marker"; exit 143' TERM INT
+    wait "$bounded_pid"; bounded_result=$?
+    kill "$watchdog" 2>/dev/null; wait "$watchdog" 2>/dev/null
+    expired=$(cat "$marker" 2>/dev/null); rm -f "$marker"
+    [ "$expired" != expired ] || exit 124
+    exit "$bounded_result"
 )
 hex() {
     if command -v od >/dev/null 2>&1; then od -An -tx1 | tr -d ' \n'
@@ -396,7 +413,9 @@ worker() {
         if [ -n "$ca" ]; then SSL_CERT_FILE=$ca RUST_LOG=off "$@" </dev/null >/dev/null 2>&1 &
         else RUST_LOG=off "$@" </dev/null >/dev/null 2>&1 & fi
         child=$!; record_pid "$work/child" "$child"; next_retry=0; worker_status running
+        event "worker $name child-start pid=$child"
         wait "$child"; last_exit=$?
+        event "worker $name child-exit status=$last_exit"
         rm -f "$work/child"; child=; restarts=$((restarts+1))
         now=$(date +%s); [ "$((now-launched))" -lt 60 ] || delay=2
         next_retry=$((now+delay)); worker_status backoff
@@ -423,6 +442,7 @@ stop_workers() {
 }
 manager_cleanup() {
     trap '' TERM INT
+    event "supervisor stop"
     terminate "$STATE/download-worker"; terminate "$STATE/download-child"
     [ -z "${download_pid:-}" ] || wait "$download_pid" 2>/dev/null
     stop_workers
@@ -432,13 +452,14 @@ manager_cleanup() {
     unlock
     exit 0
 }
-respond() { printf '%s\n' "$2" > "$STATE/responses/$1.new"; mv "$STATE/responses/$1.new" "$STATE/responses/$1"; }
+respond() { event "supervisor respond $1 $2"; printf '%s\n' "$2" > "$STATE/responses/$1.new"; mv "$STATE/responses/$1.new" "$STATE/responses/$1"; }
 process_requests() {
     set +f
     for request in "$STATE"/requests/*; do
         [ -f "$request" ] || continue
         rid=${request##*/}; action=$(get "$request" action)
         rm -f "$request"
+        event "supervisor request $rid $action"
         scan_due=0
         if [ "$action" = shutdown ]; then respond "$rid" ok; manager_cleanup; fi
         case "$action" in
@@ -522,6 +543,7 @@ daemon() {
     lock daemon
     trap 'manager_cleanup' TERM INT
     record_pid "$STATE/daemon" "$$"
+    event "supervisor start version=$VERSION"
     # Recover owned downloads as well as tunnels after a SIGKILL/crash.
     terminate "$STATE/download-worker"; terminate "$STATE/download-child"
     rm -f "$STATE/download-worker" "$STATE/download-child"
@@ -556,20 +578,25 @@ daemon() {
                     # killing/recreating it can lose the PENDING response.
                     terminate "$STATE/previous-receiver"
                     mv "$STATE/receiver" "$STATE/previous-receiver"
+                    event "receiver retained-as-previous port=$(get "$STATE/previous-receiver" port)"
                 fi
+                event "receiver replace old-port=$(get "$STATE/receiver" port) new-port=$receiver_port"
                 terminate "$STATE/receiver"
                 "$SELF" _receiver "$receiver_port" </dev/null >/dev/null 2>&1 &
                 receiver_pid=$!; record_pid "$STATE/receiver" "$receiver_pid"
                 put port "$receiver_port" >> "$STATE/receiver"
+                event "receiver start port=$receiver_port pid=$receiver_pid"
             fi
-        else terminate "$STATE/receiver"; fi
+        elif [ -f "$STATE/receiver" ]; then event "receiver stop port=$(get "$STATE/receiver" port)"; terminate "$STATE/receiver"; rm -f "$STATE/receiver"; fi
         if [ -d "$active/__previous_control" ]; then
             previous_port=$(get "$active/__previous_control/tunnel" port)
             if ! owned_alive "$STATE/previous-receiver"; then
                 "$SELF" _receiver "$previous_port" </dev/null >/dev/null 2>&1 &
                 previous_pid=$!; record_pid "$STATE/previous-receiver" "$previous_pid"
+                put port "$previous_port" >> "$STATE/previous-receiver"
+                event "previous-receiver start port=$previous_port pid=$previous_pid"
             fi
-        else terminate "$STATE/previous-receiver"; fi
+        elif [ -f "$STATE/previous-receiver" ]; then event "previous-receiver stop"; terminate "$STATE/previous-receiver"; rm -f "$STATE/previous-receiver"; fi
         now=$(date +%s)
         if [ "$now" -lt "$scan_due" ]; then sleep 1; continue; fi
         scan_due=$((now+5))
@@ -616,7 +643,7 @@ daemon() {
             respond "$sync_request" "$sync_result"; sync_request=
         fi
         printf '%s\n' "$download_due" > "$STATE/next-download"
-        prune_snapshots
+        prune_snapshots; rotate_events
         sleep 1
     done
 }
@@ -1230,6 +1257,7 @@ validate_manager() {
         sh -n "$1" && [ "$(bounded 15 "$1" --version)" != '' ]
 }
 activation_status() {
+    event "activation $1"
     printf '%s\n' "$1" > "$STATE/activation.new.$$"
     mv "$STATE/activation.new.$$" "$STATE/activation"
 }
@@ -1238,17 +1266,28 @@ job_result() {
     mv "$1/result.new.$$" "$1/result"
 }
 # An nc exec handler receives one bounded header and, for PUT, exact bytes.
-# dd bs=1 is deliberate: a short socket read must not truncate a payload.
-read_control_request() {
-    request_dir=$1; header=; count=0
+# Shell read consumes a socket byte-wise, so it never takes body bytes; the
+# capped form avoids several processes per header byte on slow devices.
+# shellcheck disable=SC3045 # feature-probed below; POSIX fallback otherwise
+read_header_capped() { IFS= read -r -n 129 header; }
+read_header_bytes() {
+    header=; count=0
     while :; do
         byte=$(dd bs=1 count=1 2>/dev/null | hex)
         [ -n "$byte" ] || return 1
-        [ "$byte" != 0a ] || break
+        [ "$byte" != 0a ] || return 0
         case "$byte" in 0[0-9a-f]|1[0-9a-f]|7f) return 1;; esac
-        char=$(printf '%b' "\\$(printf '%03o' "$((0x$byte))")")
-        header=$header$char; count=$((count+1)); [ "$count" -le 128 ] || return 1
+        header=$header$(printf '%b' "\\$(printf '%03o' "$((0x$byte))")")
+        count=$((count+1)); [ "$count" -le 128 ] || return 1
     done
+}
+read_control_request() {
+    request_dir=$1
+    if (printf 'abc\n' | { read_header_capped && [ "$header" = abc ]; }) 2>/dev/null; then
+        read_header_capped || return 1
+    else read_header_bytes || return 1; fi
+    [ "${#header}" -le 128 ] || return 1
+    case "$header" in *[![:print:]]*) return 1;; esac
     printf '%s\n' "$header" > "$request_dir/header"
     case "$header" in
         GET|'GET ACTIVE'|STATUS) return 0;;
@@ -1269,9 +1308,13 @@ control_receiver() {
     exec nc -lk -s 127.0.0.1 -p "$1" -e "$handler"
 }
 control_handle() (
+    handle_started=$(cut -d' ' -f1 /proc/uptime 2>/dev/null)
     request_dir=$(mktemp -d "$STATE/request.XXXXXXXX") || exit 1
-    trap 'rm -rf "$request_dir"' EXIT
+    trap 'event "handler done port=${WTCTL_RECEIVER_PORT:-} request=${header:-invalid} started=$handle_started"; rm -rf "$request_dir"' EXIT
     if ! bounded 15 "$SELF" _read-control "$request_dir"; then printf 'KO invalid-request\n'; exit 1; fi
+    header=$(cat "$request_dir/header")
+    header=${header%% *}
+    event "handler parsed port=${WTCTL_RECEIVER_PORT:-} request=$header started=$handle_started"
     header=$(cat "$request_dir/header")
     case "$header" in
         GET|'GET ACTIVE')
@@ -1339,6 +1382,7 @@ submit_ini() (
 # Only its private runner survives replacement of the installed executable.
 activate_rollback() {
     trap - EXIT HUP INT TERM
+    event "rollback begin job=${job##*/} failure=${failure:-} changed=${activation_changed:-0}"
     if [ "${activation_changed:-0}" = 1 ]; then
         if owned_alive "$STATE/daemon"; then (send_request pause) || :; fi
         for record in global control; do
@@ -1506,6 +1550,8 @@ help() {
 }
 command=${1:-}; [ "$#" = 0 ] || shift
 case "$command" in --help|-h|help) help; exit;; --version) printf '%s\n' "$VERSION"; exit;; doctor) doctor; exit $?;; validate) validate_ini "$@"; exit $?;; esac
+# The handler already prepared state; its reader only fills a private directory.
+if [ "$command" = _read-control ]; then read_control_request "$@"; exit $?; fi
 prepare
 case "$command" in
     '') if [ -t 0 ] && [ -t 1 ]; then menu; else help; fi;;

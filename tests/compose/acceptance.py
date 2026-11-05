@@ -9,8 +9,9 @@ import subprocess
 import time
 
 
-COMPOSE = ["docker", "compose", "-p", os.environ["WTCTL_TEST_PROJECT"],
-           "-f", os.environ.get("WTCTL_COMPOSE_FILE", str(Path(__file__).with_name("compose.yaml")))]
+COMPOSE = ["docker", "compose", "-p", os.environ["WTCTL_TEST_PROJECT"]] + (
+    os.environ["WTCTL_COMPOSE_FILES"].split() if os.environ.get("WTCTL_COMPOSE_FILES")
+    else ["-f", str(Path(__file__).with_name("compose.yaml"))])
 CHECKS = 0
 
 
@@ -54,7 +55,7 @@ def eventually(predicate, description, seconds=90):
 def passed(description):
     global CHECKS
     CHECKS += 1
-    print(f"ok {CHECKS} - {description}", flush=True)
+    print(f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} ok {CHECKS} - {description}", flush=True)
 
 
 def draft(*, enabled=True, prefix="test-secret-prefix", control_port=8099,
@@ -192,6 +193,69 @@ def downloads():
     return result.stdout
 
 
+def reliability(config):
+    """Repeat the previously intermittent paths; never retry a submission."""
+    rounds = int(os.environ.get("WTCTL_RELIABILITY_ROUNDS", "5"))
+    assert rounds > 0, "WTCTL_RELIABILITY_ROUNDS must be positive"
+    for iteration in range(1, rounds + 1):
+        compose("stop", "wstunnel")
+        compose("up", "-d", "--no-deps", "--wait", "wstunnel")
+        eventually(lambda: get() == config, "accepted control after server outage", seconds=120)
+        traffic()
+        passed(f"reliability {iteration}/{rounds}: server reconnection and four tunnel modes")
+
+        # Exercise the real replacement/timeout/restore sequence, not a simulated
+        # activation-state change. Publication of failure must mean recovery is done.
+        rollback = config.replace(b"/manager\n", b"/manager-v2\n").replace(
+            b"/binary\n", b"/binary-v2\n")
+        old_manager = read("/usr/sbin/wtctl")
+        old_binary = read("/tmp/wtctl/bin/wstunnel")
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            response = pool.submit(put, rollback, 8099, 25)
+            await_pending(rollback)
+            assert read("/usr/sbin/wtctl") != old_manager
+            assert read("/tmp/wtctl/bin/wstunnel") != old_binary
+            eventually(lambda: read("/tmp/wtctl/activation") == b"failed confirmation-timeout\n",
+                       "software rollback", seconds=110)
+            response.result()
+        assert get() == config
+        assert read("/usr/sbin/wtctl") == old_manager
+        assert read("/tmp/wtctl/bin/wstunnel") == old_binary
+        traffic()
+        passed(f"reliability {iteration}/{rounds}: timed-out software replacement restores accepted setup")
+
+        # Preserve the full-suite lead-in: a TLS-rejected candidate is
+        # superseded through the old receiver immediately before migration.
+        device("openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
+               "-subj", "/CN=untrusted", "-keyout", "/tmp/untrusted.key", "-out", "/tmp/untrusted.pem")
+        untrusted = config.replace(b"listen=8099\n", b"listen=8100\n").replace(
+            b"ca=/lab/ca.pem", b"ca=/tmp/untrusted.pem")
+        assert put(untrusted) == b"PENDING confirmation-required\n"
+        await_pending(untrusted)
+        assert remote(b"STATUS\n", port=8100, timeout=3) == b""
+        reply = put(config, timeout=25)
+        assert reply in (b"", b"OK 0\n"), reply
+        eventually(lambda: get() == config, "supersession restores accepted control")
+        eventually(lambda: read("/tmp/wtctl/activation") == b"idle\n", "supersession settles")
+
+        migrated = config.replace(b"listen=8099\n", b"listen=8100\n")
+        reply = put(migrated, timeout=25)
+        assert reply == b"PENDING confirmation-required\n", (
+            iteration, reply, read("/tmp/wtctl/activation"),
+            shell("cat /tmp/wtctl/job.*/result /tmp/wtctl/job.*/log 2>/dev/null", check=False).stdout)
+        await_pending(migrated)
+        confirm(migrated, port=8100)
+        accepted(migrated)
+        reply = put(config, port=8100, timeout=25)
+        assert reply == b"PENDING confirmation-required\n", (iteration, reply)
+        await_pending(config)
+        confirm(config)
+        accepted(config)
+        traffic()
+        passed(f"reliability {iteration}/{rounds}: post-rollback control-port migration and return")
+    print(f"\n{rounds} reliability rounds passed; {CHECKS} groups total.", flush=True)
+
+
 def main():
     reset_device()
     disabled = draft(enabled=False)
@@ -243,6 +307,10 @@ def main():
     assert get() == initial
     traffic()
     passed("rerunning --config installer preserves accepted setup and re-enables boot registration")
+
+    if os.environ.get("WTCTL_ACCEPTANCE_MODE") == "reliability":
+        reliability(initial)
+        return
 
     unchanged_downloads = downloads()
     edited = draft(target_port=17080) + b"# ordinary-only comment\n"

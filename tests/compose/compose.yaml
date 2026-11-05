@@ -1,5 +1,6 @@
 x-lab: &lab
-  platform: linux/amd64
+  # run.sh selects the host's native platform; emulation distorts timing.
+  platform: ${WTCTL_LAB_PLATFORM:-linux/amd64}
   build:
     context: ../..
     dockerfile: tests/compose/Dockerfile
@@ -41,6 +42,7 @@ services:
 
   wstunnel:
     image: ghcr.io/erebe/wstunnel:v11.1.0
+    platform: ${WTCTL_LAB_PLATFORM:-linux/amd64}
     restart: unless-stopped
     logging:
       driver: json-file

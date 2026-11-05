@@ -13,9 +13,45 @@ failure output includes server logs and device activation diagnostics. Allow
 15–30 minutes for image builds, real download/reconnection deadlines and real
 60-second confirmation timeouts. This is not physical-device qualification.
 
-The lab currently selects `linux/amd64` for the device and matching static client
-artifact. Docker Desktop may emulate it on ARM hosts; this does not demonstrate
-native CPU/ABI compatibility on an actual target device.
+The runner selects the Docker host's native platform (`linux/arm64` or
+`linux/amd64`) and the matching checksum-pinned upstream static client. It also
+overrides any user-wide `DOCKER_DEFAULT_PLATFORM` for the lab only. Emulation
+distorts timing by an order of magnitude; use `WTCTL_LAB_PLATFORM=linux/amd64`
+only when deliberately testing that ABI. Neither demonstrates compatibility with
+an actual target device.
+
+Failed runs keep runner output, timestamped Compose logs, the device event trail
+and a state dump in `tests/compose/artifacts/<project>/` (git-ignored). A failed
+image build exits 3 and is reported as no acceptance result.
+
+### Stress lab
+
+```sh
+WTCTL_RELIABILITY_ROUNDS=10 make stress-test
+WTCTL_STRESS_CPUS=0.15 WTCTL_STRESS_NETEM='delay 100ms 80ms loss 5%' make stress-test
+WTCTL_STRESS=1 make compose-test   # full suite under the same impairments
+```
+
+`tests/compose/stress.yaml` limits device CPU and applies `tc netem` to device
+egress. These are timing-margin tests, not models of a particular device or WAN.
+
+### Focused reliability loop
+
+```sh
+WTCTL_RELIABILITY_ROUNDS=5 make reliability-test
+```
+
+Uses the same disposable lab and pristine installer checks, then repeats server
+outage/reconnection, actual software replacement with the real confirmation
+timeout and rollback, and control-port migration in both directions. Each stage
+checks accepted configuration and real TCP/UDP traffic. Before migration it also
+supersedes a TLS-rejected candidate through the old receiver, preserving the
+full suite's candidate-rollback lead-in. Submissions are not
+retried: a lost or incorrect migration response fails the run. Readiness checks
+poll within bounded deadlines, as in the full acceptance suite. The default is
+five rounds; each includes the real 60-second confirmation timeout. This is a
+regression/repeatability tool, not a substitute for extended soak or hardware
+qualification.
 
 ## Topology
 

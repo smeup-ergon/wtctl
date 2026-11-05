@@ -1,5 +1,5 @@
 VERSION := 0.2.0
-.PHONY: check test integration compose-test openwrt-smoke dist
+.PHONY: check test integration compose-test reliability-test stress-test openwrt-smoke dist
 check:
 	sh -n tests/config-ini.sh tests/netcat-baseline.sh tests/control-config.sh
 	sh -n tests/control-timeout.sh
@@ -22,6 +22,12 @@ integration:
 
 compose-test:
 	sh tests/compose/run.sh
+
+reliability-test:
+	WTCTL_ACCEPTANCE_MODE=reliability sh tests/compose/run.sh
+
+stress-test:
+	WTCTL_STRESS=1 WTCTL_ACCEPTANCE_MODE=reliability sh tests/compose/run.sh
 
 openwrt-smoke:
 	./tests/openwrt-smoke.sh

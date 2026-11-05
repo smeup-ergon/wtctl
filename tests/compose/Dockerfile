@@ -1,6 +1,5 @@
-# syntax=docker/dockerfile:1
 FROM alpine:3.21 AS lab
-RUN apk add --no-cache ca-certificates curl openssl python3 \
+RUN apk add --no-cache ca-certificates curl iproute2-tc openssl python3 \
     && mkdir -p /etc/init.d \
     && printf '%s\n' '#!/bin/sh' \
        '# Test-only registration recorder, not an init implementation.' \
@@ -13,12 +12,19 @@ ENTRYPOINT ["python3", "/work/tests/compose/lab.py"]
 
 # Official image executable requires glibc; the upstream release executable is
 # static musl and matches the Alpine/BusyBox device baseline. Init only.
+# Pinned per architecture so the lab runs natively instead of under emulation.
 FROM lab AS artifacts
-RUN curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
+ARG TARGETARCH
+RUN case "$TARGETARCH" in \
+      amd64) sum=512edf4e7bb64fc133522220123514868fae75b5bae4124b53e396787276aa23;; \
+      arm64) sum=148895f957a68be39e2b65d28c5f2065b9c58c4a0cfd48c560b2b3267f398464;; \
+      *) echo "unsupported lab architecture: $TARGETARCH" >&2; exit 1;; \
+    esac \
+    && curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
       --connect-timeout 20 --max-time 180 \
-      https://github.com/erebe/wstunnel/releases/download/v11.1.0/wstunnel_11.1.0_linux_amd64.tar.gz \
+      "https://github.com/erebe/wstunnel/releases/download/v11.1.0/wstunnel_11.1.0_linux_${TARGETARCH}.tar.gz" \
       -o /tmp/wstunnel.tar.gz \
-    && echo '512edf4e7bb64fc133522220123514868fae75b5bae4124b53e396787276aa23  /tmp/wstunnel.tar.gz' | sha256sum -c - \
+    && echo "$sum  /tmp/wstunnel.tar.gz" | sha256sum -c - \
     && tar -xzf /tmp/wstunnel.tar.gz -C /opt wstunnel \
     && mv /opt/wstunnel /opt/wstunnel-source \
     && chmod 755 /opt/wstunnel-source \
