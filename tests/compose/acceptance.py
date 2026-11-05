@@ -99,10 +99,13 @@ def local_apply(config):
     return device("/usr/sbin/wtctl", "apply", "-", data=config, check=False).stdout
 
 
-def install(config, adapter="sysv"):
-    device("sh", "-c", "cat > /tmp/initial.ini", data=config)
-    return device("sh", "/work/scripts/install.sh", "--yes", "--config", "/tmp/initial.ini",
-                  "--startup", adapter, check=False)
+def install(config):
+    """No-parameter install (bootstrap service), then apply the edited sample."""
+    installed = device("sh", "/work/scripts/install.sh", check=False)
+    assert installed.returncode == 0, (installed.stdout, installed.stderr)
+    assert b"REPLACE-ME" in read("/etc/wtctl/wtctl.ini")
+    device("sh", "-c", "cat > /etc/wtctl/wtctl.ini", data=config)
+    return device("/usr/sbin/wtctl", "apply", "/etc/wtctl/wtctl.ini", check=False)
 
 
 def remote(payload, port=8099, timeout=240):
@@ -265,7 +268,7 @@ def main():
     assert b"wtctl defaults" in read("/lab/registration.log")
     traffic()
     assert b"/manager" in downloads() and b"/binary" in downloads()
-    passed("fresh --config install: verified HTTPS downloads, registration, four real tunnel modes")
+    passed("fresh install then apply: verified HTTPS downloads, registration, four real tunnel modes")
 
     # Separate local apply semantics before moving on to a pristine remote case.
     local_edit = disabled + b"# local complete replacement\n"
@@ -274,14 +277,15 @@ def main():
     traffic()
     passed("local stdin submission uses the same complete-configuration activation path")
 
-    # Invalid input must be rejected before installer changes an existing device.
+    # The installer never changes an existing installation.
     before = read("/usr/sbin/wtctl")
-    invalid = disabled.replace(b"format=1", b"format=99")
-    result = install(invalid)
-    assert result.returncode != 0
+    result = device("sh", "/work/scripts/install.sh", check=False)
+    assert result.returncode != 0 and b"already installed" in result.stderr, (result.stdout, result.stderr)
     assert read("/usr/sbin/wtctl") == before
+    invalid = disabled.replace(b"format=1", b"format=99")
+    assert local_apply(invalid).startswith(b"KO invalid-configuration")
     accepted(local_edit)
-    passed("invalid installer INI leaves existing executable and active state intact")
+    passed("installer rerun refused; invalid INI leaves executable and active state intact")
 
     reset_device()
     initial = draft()
@@ -290,23 +294,14 @@ def main():
     assert shell("test ! -f /etc/wtctl/active.ini").returncode == 0
     confirm(initial)
     accepted(initial)
-    eventually(lambda: shell("test -f /tmp/wtctl/install-handoff-complete", check=False).returncode == 0,
-               "post-confirmation init handoff")
-    eventually(lambda: get() == initial, "control after initial init handoff")
     traffic()
     assert get("GET") == initial
-    passed("fresh enabled-control installer and identical-byte confirmation through server using nc")
+    passed("fresh enabled-control install and identical-byte confirmation through server using nc")
 
-    registration_before = read("/lab/registration.log")
-    result = install(initial)
-    assert result.returncode == 0 and b"OK 0\n" in result.stdout, (result.stdout, result.stderr)
-    accepted(initial)
-    assert shell("test -f /tmp/wtctl/install-handoff-complete").returncode == 0
-    eventually(lambda: get() == initial, "control after repeated installer init handoff")
-    assert len(read("/lab/registration.log")) > len(registration_before)
-    assert get() == initial
+    compose("restart", "device")
+    eventually(lambda: get() == initial, "control after init-started service restart", seconds=120)
     traffic()
-    passed("rerunning --config installer preserves accepted setup and re-enables boot registration")
+    passed("init-started service restores accepted control and tunnels")
 
     if os.environ.get("WTCTL_ACCEPTANCE_MODE") == "reliability":
         reliability(initial)
@@ -431,7 +426,7 @@ def main():
             confirm(updated)
             response.result()
         accepted(updated)
-        assert device("/usr/sbin/wtctl", "--version").stdout == (b"0.2.0-lab3\n" if key == "both" else b"0.2.0-lab2\n")
+        assert device("/usr/sbin/wtctl", "--version").stdout == (b"0.3.0-lab3\n" if key == "both" else b"0.3.0-lab2\n")
         assert read("/tmp/wtctl/bin/wstunnel") == read("/lab/" + changes.get("binary", "binary"))
         traffic()
         edited = updated
@@ -528,7 +523,7 @@ def main():
     assert shell("test ! -d /tmp/wtctl/tunnels/ft").returncode == 0
     status = device("/usr/sbin/wtctl", "status").stdout
     assert b"Control:" in status and b"__control " not in status
-    assert device("/usr/sbin/wtctl", "tunnel", "list").stdout == b""
+    assert device("/usr/sbin/wtctl", "tunnel", "list", check=False).returncode != 0
     passed("omitted ordinary tunnels removed while control remains available")
 
     off = no_tunnels.replace(b"enabled=true", b"enabled=false")
@@ -547,8 +542,7 @@ def main():
     assert shell("test ! -f /etc/wtctl/active.ini").returncode == 0
     compose("restart", "device")
     assert shell("test ! -f /etc/wtctl/active.ini").returncode == 0
-    result = install(initial)
-    assert b"PENDING confirmation-required" in result.stdout, (result.stdout, result.stderr)
+    assert local_apply(initial) == b"PENDING confirmation-required\n"
     await_pending(initial)
     eventually(lambda: read("/tmp/wtctl/activation") == b"failed confirmation-timeout\n",
                "first-install timeout restores bootstrap", seconds=100)
@@ -561,7 +555,7 @@ def main():
     reset_device()
     matrix = device("sh", "/work/tests/compose/installer-adapters.sh", timeout=600)
     print(matrix.stdout.decode(), end="", flush=True)
-    passed("new INI installer adapter matrix with explicit init/registration doubles")
+    passed("no-parameter installer adapter matrix with explicit init/registration doubles")
     print(f"\n{CHECKS} Compose acceptance groups passed. Physical boot qualification is separate.", flush=True)
 
 

@@ -31,17 +31,17 @@ esac
 RC_COMMON
 chmod 755 /etc/rc.common
 /usr/sbin/wtctl status >/dev/null
-/usr/sbin/wtctl startup install openwrt --yes
+/usr/sbin/wtctl _startup install openwrt --yes
 [ -f /test/boot-enabled ]
 boot_report 'Boot integration: openwrt — enabled'
 [ ! -e /test/doctor-queried-init ]
 /etc/init.d/wtctl disable
 boot_report 'Boot integration: openwrt — disabled'
 cp /etc/init.d/wtctl /test/adapter.before
-/usr/sbin/wtctl startup enable openwrt --yes
+/usr/sbin/wtctl _startup enable openwrt --yes
 cmp /etc/init.d/wtctl /test/adapter.before
 boot_report 'Boot integration: openwrt — enabled'
-if /usr/sbin/wtctl startup enable sysv --yes >/dev/null 2>&1; then exit 1; fi
+if /usr/sbin/wtctl _startup enable sysv --yes >/dev/null 2>&1; then exit 1; fi
 boot_report 'Boot integration: openwrt — enabled'
 su -s /bin/sh nobody -c '/usr/sbin/wtctl doctor' > /test/doctor.nonroot
 grep -Fq 'Boot integration: openwrt — enabled' /test/doctor.nonroot
@@ -50,8 +50,8 @@ su -s /bin/sh nobody -c '/usr/sbin/wtctl doctor' > /test/doctor.restricted
 grep -Fq 'Boot integration: openwrt — unknown (registration directory not accessible)' /test/doctor.restricted
 chmod 755 /etc/rc.d
 grep -q 'procd_set_param command /usr/sbin/wtctl daemon' /etc/init.d/wtctl
-if /usr/sbin/wtctl startup install openwrt --yes >/dev/null 2>&1; then exit 1; fi
-/usr/sbin/wtctl startup remove openwrt --yes
+if /usr/sbin/wtctl _startup install openwrt --yes >/dev/null 2>&1; then exit 1; fi
+/usr/sbin/wtctl _startup remove openwrt --yes
 [ ! -e /etc/init.d/wtctl ] && [ ! -e /test/boot-enabled ]
 cat > /usr/bin/systemctl <<'SYSTEMCTL'
 #!/bin/sh
@@ -63,7 +63,7 @@ case "$1" in
 esac
 SYSTEMCTL
 chmod 755 /usr/bin/systemctl
-/usr/sbin/wtctl startup install systemd --yes
+/usr/sbin/wtctl _startup install systemd --yes
 grep -q '^ExecStart=/usr/sbin/wtctl daemon$' /etc/systemd/system/wtctl.service
 grep -q '^enable wtctl$' /test/systemctl.calls
 boot_report 'Boot integration: systemd — enabled'
@@ -76,7 +76,7 @@ boot_report 'Boot integration: systemd — unknown (systemctl query failed)'
 mv /usr/bin/systemctl /usr/bin/systemctl.hidden
 boot_report 'Boot integration: systemd — unknown (systemctl unavailable)'
 mv /usr/bin/systemctl.hidden /usr/bin/systemctl
-/usr/sbin/wtctl startup remove systemd --yes
+/usr/sbin/wtctl _startup remove systemd --yes
 [ ! -e /etc/systemd/system/wtctl.service ]
 grep -q '^disable --now wtctl$' /test/systemctl.calls
 cat > /usr/bin/update-rc.d <<'UPDATE_RC'
@@ -87,7 +87,7 @@ case "$*" in
 esac
 UPDATE_RC
 chmod 755 /usr/bin/update-rc.d
-/usr/sbin/wtctl startup install sysv --yes
+/usr/sbin/wtctl _startup install sysv --yes
 rm /etc/rc2.d/S99wtctl
 grep -q 'daemon --background' /etc/init.d/wtctl
 boot_report 'Boot integration: sysv — not registered (manual boot hooks may exist)'
@@ -103,20 +103,36 @@ mv "$readlink_path" "$readlink_path.hidden"
 boot_report 'Boot integration: sysv — unknown (readlink unavailable)'
 mv "$readlink_path.hidden" "$readlink_path"
 rm /etc/rc2.d/S99wtctl
-/usr/sbin/wtctl startup remove sysv --yes
+/usr/sbin/wtctl _startup remove sysv --yes
 [ ! -e /etc/init.d/wtctl ]
 printf 'unrelated administrator file\n' > /etc/init.d/wtctl
 boot_report 'Boot integration: init script — unmanaged (left untouched)'
-if /usr/sbin/wtctl startup enable sysv --yes >/dev/null 2>&1; then exit 1; fi
-if /usr/sbin/wtctl startup remove sysv --yes >/dev/null 2>&1; then exit 1; fi
+if /usr/sbin/wtctl _startup enable sysv --yes >/dev/null 2>&1; then exit 1; fi
+if /usr/sbin/wtctl _startup remove sysv --yes >/dev/null 2>&1; then exit 1; fi
 grep -q '^unrelated administrator file$' /etc/init.d/wtctl
 rm /etc/init.d/wtctl
 ln -s /test/missing-adapter /etc/init.d/wtctl
 boot_report 'Boot integration: init script — unmanaged symlink (not inspected)'
-if /usr/sbin/wtctl startup enable openwrt --yes >/dev/null 2>&1; then exit 1; fi
+if /usr/sbin/wtctl _startup enable openwrt --yes >/dev/null 2>&1; then exit 1; fi
 [ ! -e /test/missing-adapter ]
 rm /etc/init.d/wtctl
-/usr/sbin/wtctl uninstall --purge --yes
-[ ! -e /usr/sbin/wtctl ]
+# uninstall removes managed boot integration itself and leaves unmanaged files.
+/usr/sbin/wtctl _startup install sysv --yes
+mkdir -p /etc/rc2.d; ln -sf ../init.d/wtctl /etc/rc2.d/S99wtctl
+/usr/sbin/wtctl uninstall --yes > /test/uninstall.out
+grep -q 'Removed sysv boot integration' /test/uninstall.out
+[ ! -e /etc/init.d/wtctl ] && [ ! -e /etc/rc2.d/S99wtctl ] && [ -d /etc/wtctl ] && [ ! -e /usr/sbin/wtctl ]
+cp /work/wtctl /usr/sbin/wtctl; chmod 755 /usr/sbin/wtctl
+/usr/sbin/wtctl _startup install systemd --yes
+/usr/sbin/wtctl uninstall --yes > /test/uninstall.out
+grep -q 'Removed systemd boot integration' /test/uninstall.out
+[ ! -e /etc/systemd/system/wtctl.service ]
+cp /work/wtctl /usr/sbin/wtctl; chmod 755 /usr/sbin/wtctl
+printf 'unrelated administrator file\n' > /etc/init.d/wtctl
+/usr/sbin/wtctl uninstall --purge --yes > /test/uninstall.out
+grep -q 'Left unmanaged startup file untouched: /etc/init.d/wtctl' /test/uninstall.out
+grep -q '^unrelated administrator file$' /etc/init.d/wtctl
+rm /etc/init.d/wtctl /usr/bin/systemctl
+[ ! -e /usr/sbin/wtctl ] && [ ! -e /etc/wtctl ]
 python3 /work/tests/installer.py
-printf 'Startup adapter generation/ownership, doctor and installer checks passed.\n'
+printf 'Startup adapter generation/ownership, doctor, uninstall and installer checks passed.\n'

@@ -1,5 +1,19 @@
 # Validation and release gates
 
+## 0.3.0 configuration-only management
+
+Interactive menus, prompts, the `server`/`tunnel` commands and installer flags
+were removed ([ADR 0003](adr/0003-remove-interactive-and-record-management.md)).
+The fixture suite now drives every lifecycle check through complete INI
+configurations and `wtctl apply`, and covers the no-parameter installer (sample
+placeholders rejected, rerun refused, missing init system refused, streamed
+truncation/failure), `uninstall` removing boot integration, legacy record-only
+rejection and the doctor `nc` check. The Compose installer matrix asserts that a
+manager-replacing apply keeps the init-started supervisor PID on SysV, OpenWrt
+and systemd shims. Sections below describe earlier releases; their menu and
+installer-flag coverage no longer applies. No physical 0.3.0 acceptance is
+claimed.
+
 ## Streamed single-command setup follow-up
 
 `curl .../scripts/install.sh | sh` is covered by a real controlling-terminal
@@ -160,12 +174,11 @@ firmware/feeds, network/firewall settings and unrelated processes.
 - [ ] Quantify flash configuration footprint, RAM download peak and qualify
       additional concurrency/traffic loads for a specific production deployment.
 - [ ] Test local executable use without curl and chosen RAM/persistent strategy.
-- [ ] Exercise CLI and menu including auth, custom CA, edits, apply and removal.
+- [ ] Exercise local and remote INI apply including auth, custom CA, edits and tunnel omission.
 - [x] Verify all four traffic forms against controlled sinks after recovery;
       simulate printer-like reverse TCP bursts, idle and reconnects.
 - [ ] Resolve intermittent reverse-UDP loss; actual target-device qualification
       is outside the owner's simulated-printer scope.
-- [ ] Verify disabled tunnels remain stopped; temporary stops reset only as documented.
 - [ ] Verify procd ownership, manager crash/respawn, tunnel crash recovery,
       and stop during an active download; no owned orphan survives.
 - [x] Test controlled software reboot; restore last-applied settings without

@@ -1,4 +1,4 @@
-VERSION := 0.2.0
+VERSION := 0.3.0
 .PHONY: check test integration compose-test reliability-test stress-test openwrt-smoke dist
 check:
 	sh -n tests/config-ini.sh tests/netcat-baseline.sh tests/control-config.sh

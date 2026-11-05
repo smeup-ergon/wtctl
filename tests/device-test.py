@@ -62,7 +62,7 @@ modified = False
 original_running = False
 script = args.script.read_bytes()
 if b'\nVERSION=0.1.0\n' not in script:
-    parser.error('Historical 0.1.0 harness: incompatible with 0.2.0 automatic lifecycle; no device changes performed')
+    parser.error('Historical 0.1.0 harness: incompatible with 0.3.0 INI management; no device changes performed')
 
 
 def ssh(command, *, data=None, timeout=120):

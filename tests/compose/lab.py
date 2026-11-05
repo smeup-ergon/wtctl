@@ -61,8 +61,8 @@ def init():
         (LAB / name).chmod(0o755)
     # Distinct manager payloads prove replacement/rollback changes bytes, rather
     # than only changing a URL while downloading an identical artifact.
-    (LAB / "manager-v2").write_bytes((LAB / "manager").read_bytes().replace(b"VERSION=0.2.0\n", b"VERSION=0.2.0-lab2\n", 1))
-    (LAB / "manager-v3").write_bytes((LAB / "manager").read_bytes().replace(b"VERSION=0.2.0\n", b"VERSION=0.2.0-lab3\n", 1))
+    (LAB / "manager-v2").write_bytes((LAB / "manager").read_bytes().replace(b"VERSION=0.3.0\n", b"VERSION=0.3.0-lab2\n", 1))
+    (LAB / "manager-v3").write_bytes((LAB / "manager").read_bytes().replace(b"VERSION=0.3.0\n", b"VERSION=0.3.0-lab3\n", 1))
     # Trailing markers do not change ELF loading or real tunnel behavior, but
     # make staged versions byte-distinct for replacement/rollback assertions.
     for version in (2, 3):

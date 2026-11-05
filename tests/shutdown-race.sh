@@ -10,9 +10,26 @@ trap '"$W" shutdown >/dev/null 2>&1 || :' EXIT
 "$W" status
 mkdir -p "$WTCTL_STATE_DIR/bin"
 cp /fixture "$WTCTL_STATE_DIR/bin/wstunnel"
-"$W" server add race --endpoint wss://example.com
-"$W" tunnel add race --server race --listen 19999 --target localhost --port 80
-"$W" daemon --background
+"$W" _bootstrap https://example.com/manager
+# Accept the provisioned fixture so activation needs no download.
+printf 'manager_url=https://example.com/manager\nwstunnel_url=https://example.com/binary\n' > "$WTCTL_CONFIG_DIR/activation-state"
+cat > /test/race.ini <<'EOF'
+[wtctl]
+format=1
+url=https://example.com/manager
+wstunnel_url=https://example.com/binary
+[control]
+enabled=false
+server=race
+[server race]
+endpoint=wss://example.com
+[tunnel race]
+server=race
+listen=19999
+target=localhost
+port=80
+EOF
+"$W" apply /test/race.ini | grep -qx 'OK 0'
 attempt=0
 while ! grep -q '^state=running$' "$WTCTL_STATE_DIR/tunnels/race/status" 2>/dev/null; do
     attempt=$((attempt+1)); [ "$attempt" -lt 20 ]; sleep 1

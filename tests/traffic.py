@@ -74,31 +74,35 @@ try:
     pathlib.Path('/test/state/bin').mkdir(parents=True, exist_ok=True)
     import shutil
     shutil.copy('/real-wstunnel', '/test/state/bin/wstunnel')
-    run("server", "add", "peer", "--endpoint", "wss://localhost:18443", "--ca", "/test/ca.pem", "--auth", "path", "--prefix", "test-prefix")
+    run("_bootstrap", "https://example.com/manager")
+    # Accept the already-provisioned test binary; this case tests real traffic
+    # and control streams, not HTTPS download staging.
+    (ROOT / "config/activation-state").write_text(
+        "manager_url=https://example.com/manager\nwstunnel_url=https://example.com/binary\n"
+    )
+    base = (
+        "[wtctl]\nformat=1\nurl=https://example.com/manager\n"
+        "wstunnel_url=https://example.com/binary\n[control]\nENABLED"
+        "server=peer\nbind=127.0.0.1\nlisten=18099\n"
+        "[server peer]\nendpoint=wss://localhost:18443\n"
+        "auth=path\nprefix=test-prefix\nca=/test/ca.pem\n"
+    )
     for name, direction, protocol, listen, target in (
         ("ft", "forward", "tcp", 18001, 17080),
         ("fu", "forward", "udp", 18002, 17081),
         ("rt", "reverse", "tcp", 18003, 17080),
         ("ru", "reverse", "udp", 18004, 17081),
     ):
-        run("tunnel", "add", name, "--server", "peer", "--direction", direction, "--protocol", protocol, "--listen", str(listen), "--target", "127.0.0.1", "--port", str(target))
+        base += (f"[tunnel {name}]\nserver=peer\ndirection={direction}\nprotocol={protocol}\n"
+                 f"listen={listen}\ntarget=127.0.0.1\nport={target}\n")
     run("daemon", "--background")
+    (ROOT / "tunnels.ini").write_text(base.replace("ENABLED", "enabled=false\n"))
+    assert subprocess.check_output([W, "apply", "/test/tunnels.ini"]) == b"OK 0\n"
     for protocol, port in (("tcp", 18001), ("udp", 18002), ("tcp", 18003), ("udp", 18004)):
         probe(protocol, port)
         print(f"PASS: verified-TLS {protocol} traffic on {port}", flush=True)
     run("status")
-    # Seed accepted source identities for the already-provisioned test binaries;
-    # this case tests actual control traffic, not HTTPS download staging.
-    (ROOT / "config/activation-state").write_text(
-        "manager_url=https://example.com/manager\nwstunnel_url=https://example.com/binary\n"
-    )
-    draft = (
-        "[wtctl]\nformat=1\nurl=https://example.com/manager\n"
-        "wstunnel_url=https://example.com/binary\n[control]\n"
-        "server=peer\nbind=127.0.0.1\nlisten=18099\n"
-        "[server peer]\nendpoint=wss://localhost:18443\n"
-        "auth=path\nprefix=test-prefix\nca=/test/ca.pem\n"
-    ).encode()
+    draft = base.replace("ENABLED", "").encode()
     (ROOT / "control.ini").write_bytes(draft)
     pending = subprocess.check_output([W, "apply", "/test/control.ini"])
     assert pending == b"PENDING confirmation-required\n", pending
@@ -124,7 +128,7 @@ try:
             time.sleep(1)
     assert reply == b"OK 0\n", reply
     assert control_request(b"GET ACTIVE\n") == f"OK {len(draft)}\n".encode() + draft
-    disabled = draft.replace(b"[control]\n", b"[control]\nenabled=false\n")
+    disabled = base.replace("ENABLED", "enabled=false\n").encode()
     assert control_request(f"PUT {len(disabled)}\n".encode() + disabled) == b"OK 0\n"
     print("PASS: real WSS control confirmation, GET ACTIVE, and remote disable reply", flush=True)
     print("4 ordinary traffic checks and control stream checks passed. Physical OpenWrt qualification is still required.", flush=True)

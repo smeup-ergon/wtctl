@@ -1,206 +1,174 @@
 # wtctl
 
 A small, root-operated **POSIX-shell wstunnel client manager** for Linux.
-One setup script, automatic tunnel lifecycle, and single-key menus. No LuCI,
-UCI, rpcd, Bash, Python, jq or dialog is required at runtime.
+One complete INI configuration describes the device: software sources, servers,
+tunnels and an optional remote control tunnel. It is applied locally with
+`wtctl apply` or remotely with plain netcat. No LuCI, UCI, rpcd, Bash, Python,
+jq or dialog is required at runtime.
 
-**0.2.0 is a development release.** The simplified lifecycle has not been
-requalified on physical hardware. Earlier GL-AR300M evidence describes 0.1.0,
-not this release; an intermittent reverse-UDP timeout remains unresolved.
+**0.3.0 is a development release.** INI management has not been qualified on
+physical hardware. Earlier GL-AR300M evidence describes 0.1.0, not this release.
 See [validation](docs/VALIDATION.md) and [historical physical evidence](docs/PHYSICAL-TESTS.md).
 
-## Setup and updates
+## Install
 
-Run this single command **as root** in a terminal:
+Run as root (inspect and trust the source before running downloaded code):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/smeup-ergon/wtctl/main/scripts/install.sh | sh
 ```
 
-The installer fetches the manager from the same repository, confirms setup with
-a numbered single-key prompt, and reads wizard input from `/dev/tty` (not the
-script pipe). It works from any directory; no checkout or archive is needed.
-Curl with HTTPS and CA trust must already be installed. Inspect/trust the source
-before running downloaded code as root. `main` follows the latest development
-code; for reproducible installs use a tag/commit for **both** downloads:
+Or run `sh scripts/install.sh` from a copied release, which installs the adjacent
+`wtctl`. The installer takes no parameters and asks no questions. It:
+
+1. refuses to run if `/usr/sbin/wtctl` already exists;
+2. detects OpenWrt (procd), running systemd, or SysV with `update-rc.d`, and
+   otherwise stops before changing anything;
+3. installs `/usr/sbin/wtctl` (fetched from `main` with verified HTTPS-only
+   redirects, size/time limits and syntax checks when streamed);
+4. writes the sample `/etc/wtctl/wtctl.ini` unless that file already exists;
+5. registers boot startup and starts an idle service with no tunnels and
+   control disabled.
+
+Curl with HTTPS and CA trust must already be installed. Then edit the sample and
+apply it:
 
 ```sh
-ref=YOUR_TAG_OR_COMMIT
-curl -fsSL "https://raw.githubusercontent.com/smeup-ergon/wtctl/$ref/scripts/install.sh" | sh -s -- --ref "$ref"
+vi /etc/wtctl/wtctl.ini
+wtctl validate /etc/wtctl/wtctl.ini
+wtctl apply /etc/wtctl/wtctl.ini
 ```
 
-Or copy the release directory and run `sh scripts/install.sh --yes` locally.
-After setup, run `wtctl` for the menu.
+The sample contains `REPLACE-ME` placeholders that validation rejects, so an
+unedited sample cannot be applied. Its `url=` is the manager URL the installer
+used, which is already accepted: keeping it downloads no new manager.
 
-Setup asks for RAM/persistent storage and an approved **HTTPS URL serving a raw
-native wstunnel executable**, not an archive. It downloads and validates the
-binary, automatically enables boot startup, and starts the service now. RAM is
-the default for unattended first setup. Existing settings and tunnels are
-preserved on reruns; blank URL input keeps the current source and binary.
+## Configuration
 
-For unattended setup, pass `--yes` and a binary URL (or reuse an existing one):
+```ini
+[wtctl]
+format=1
+url=https://raw.githubusercontent.com/smeup-ergon/wtctl/main/wtctl
+wstunnel_url=https://downloads.example.com/wstunnel-mips-musl
+storage=ram
 
-```sh
-curl -fsSL https://raw.githubusercontent.com/smeup-ergon/wtctl/main/scripts/install.sh | \
-  sh -s -- --yes --storage ram \
-    --url 'https://downloads.example.com/wstunnel-mips-musl' --startup openwrt
+[control]
+enabled=true
+server=office
+bind=::
+listen=8099
+
+[server office]
+endpoint=wss://tunnel.example.com
+auth=path
+prefix=YOUR_PREFIX
+
+[tunnel printer]
+server=office
+direction=reverse
+protocol=tcp
+bind=127.0.0.1
+listen=9100
+target=192.168.1.50
+port=9100
 ```
 
-The same flags work with a local `sh scripts/install.sh`. Without a controlling
-terminal, setup requires `--yes` and any missing values supplied as flags.
-The complete installer is parsed before setup runs; interrupted/truncated streams
-cannot execute partially received setup steps. The manager download uses verified
-HTTPS-only redirects, size/time limits, marker and shell syntax validation.
+Every apply submits the **complete** configuration; the latest valid submission
+wins. Omitting a tunnel removes it. Only affected tunnels restart. The full schema
+and semantics are in [CONTROL-CONFIG-DESIGN.md](docs/CONTROL-CONFIG-DESIGN.md).
 
-OpenWrt and running systemd are detected automatically, as is SysV with
-`update-rc.d`. Use `--startup systemd` or `--startup sysv` to select explicitly.
-If detection fails, the interactive wizard offers numbered adapters; unattended
-setup requires `--startup`. SysV without `update-rc.d` fails rather than falsely
-claiming automatic boot registration. Startup integration requires default
-paths and installation at `/usr/sbin/wtctl`.
-
-**Update by rerunning the same script with `--url`:**
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/smeup-ergon/wtctl/main/scripts/install.sh | \
-  sh -s -- --yes --url 'https://downloads.example.com/new-wstunnel'
-```
-
-An explicitly supplied URL triggers replacement even if the URL is unchanged.
-The candidate downloads and validates while existing tunnels keep running.
-Activation briefly stops clients, retains the old binary until local startup is
-acknowledged, and rolls back on failure. Failed downloads leave the old binary,
-configuration and clients intact. Changing storage uses the same safe process.
-No separate init, apply, binary configure/install/update, or enable/disable commands.
-
-## Tunnels
-
-Use `wtctl` for the menu, or use the CLI:
-
-```sh
-wtctl server add office --endpoint wss://tunnel.example.com --auth path --prefix YOUR_PREFIX
-wtctl tunnel add printer --server office --direction reverse --protocol tcp \
-  --bind 127.0.0.1 --listen 9100 --target 192.168.1.50 --port 9100
-wtctl status
-```
-
-**Every saved tunnel starts immediately and automatically at boot.** Edits apply
-implicitly, restarting only affected tunnels. Editing a shared server restarts
-all its tunnels; the menu shows the affected names before saving. Invalid
-configuration or inability to start the local worker restores the previous
-record and snapshot. Remote outages/client failures retain the tunnel and retry.
-Acknowledgment is **not a connectivity or socket-reservation guarantee**.
-
-To stop a tunnel permanently:
-
-```sh
-wtctl tunnel remove printer
-```
-
-There are no disabled tunnels or temporary-stop states. A server referenced by
-a tunnel cannot be removed. Removing a tunnel also stops its owned worker/client.
-
-For reverse tunnels, bind/listen is on the remote server and the target is
-reached from this device. For forward tunnels, the listener is local and the
-target is reached from the server. Non-loopback exposure is your responsibility;
-no firewall or server authorization changes are made. IPv6 targets use brackets,
-e.g. `--bind ::1 --target '[::1]'`.
-
-Basic authentication uses hidden menu entry or a private one-line password file:
-
-```sh
-wtctl server edit office --auth basic --username USER --password-file /root/wstunnel.password
-```
+- `url=` / `wstunnel_url=`: HTTPS sources for wtctl and a raw native wstunnel
+  executable (not an archive). **A changed URL requests an update**; unchanged
+  URLs never re-download. There is no separate update command.
+- `storage=ram` re-downloads the accepted binary after reboot; `persistent`
+  keeps it in `/etc/wtctl/bin`.
+- `[server NAME]`: `auth=none|path|basic` (with `prefix=` or `username=` and
+  `password=`), optional `ca=` file for a private CA.
+- `[tunnel NAME]`: for reverse tunnels the listener is on the server and the
+  target is reached from this device; forward tunnels are the opposite.
+  IPv6 uses `bind=::1` and `target=[::1]`.
 
 Passwords are plaintext in root-only configuration and can appear in privileged
-client process arguments. Status/listings redact credentials and endpoints.
+client arguments. Status output redacts credentials.
 
-## Menus
+A download, validation or startup failure keeps the previous working setup,
+reports `KO REASON`, and leaves the failed draft as desired configuration
+without retrying it, including after reboot. Resubmit to retry.
 
-All choices, confirmations, and existing server/tunnel selections have keys.
-Press `1`–`9` directly; longer lists continue with `a`–`z`. `0` is always
-Back/Exit/Cancel. No Enter or pagination is needed for ordinary choices. URLs,
-names, addresses, ports and credentials remain normal text entry with Enter.
-Without usable `stty`, choices fall back to Enter-based input. Lists exceeding
-35 entries use numbered line input rather than ambiguous multi-key shortcuts.
-EOF and signals restore terminal settings. Editing uses a complete wizard;
-CLI edits can change individual fields.
+## Remote control
+
+With `[control] enabled=true` the device keeps a reverse tunnel to the server,
+and configuration is read or replaced with plain netcat through the server's
+forwarded port:
+
+```sh
+printf 'GET ACTIVE\n' | nc -w 5 SERVER 8099
+{ printf 'PUT %s\n' "$(wc -c < device.ini | tr -d ' ')"; cat device.ini; } | nc -w 240 SERVER 8099
+```
+
+Enabling control, changing control connectivity or changing a software URL while
+control is enabled returns `PENDING confirmation-required`: send the identical
+bytes again through the new control path within 60 seconds to confirm it.
+**There is no application authentication: restrict the server-side port with a
+firewall.** See [Netcat control](docs/NETCAT-CONTROL.md).
+
+## Commands
+
+```text
+wtctl status                  supervisor, binary, tunnel and control state
+wtctl doctor                  platform, utilities, nc receiver and boot checks
+wtctl validate FILE           offline validation; changes nothing
+wtctl apply FILE|-            activate a complete configuration (- reads stdin)
+wtctl uninstall [--purge] --yes
+```
+
+`daemon` and `shutdown` are service plumbing. For maintenance stop the owning
+service (`/etc/init.d/wtctl stop` or `systemctl stop wtctl`).
 
 ## Requirements and recovery
 
 Linux, mounted `/proc`, root, POSIX `sh`, and basic utilities (normally BusyBox):
 `awk grep tr id ls chmod mkdir rm mv cp dirname basename date sleep head cmp dd
-wc df uname cut`, plus `od` or `hexdump`. Setup/download recovery needs **curl
-with HTTPS and CA trust**. Existing managed binaries operate without curl.
-`wtctl doctor` reports capabilities; it never installs dependencies.
-Single-key navigation and hidden passwords need `stty`; without it, passwords
-are supplied through an existing private file.
+wc df uname cut`, plus `od` or `hexdump`. Downloads need **curl with HTTPS and
+CA trust**; the control receiver needs BusyBox `nc` with `-lk -s -p -e`.
+`wtctl doctor` reports these and never installs dependencies.
 
 Binary checks compare ELF class/endianness/machine with `/bin/sh` and run a
 bounded client-help check. They do **not** prove authenticity, complete ABI/ISA
 compatibility or connectivity. Administrator-selected code executes as root.
-No checksum/signature requirement is imposed.
 
 Downloads require space for the retained old binary plus a candidate of up to
-24 MiB and 1 MiB reserve. Verified HTTPS-only redirects, connection/transfer
-limits and size bounds apply. Missing RAM binaries recover after reboot while
-any tunnel exists; failures retry indefinitely with bounded exponential backoff
-and jitter. RAM mode needs working networking, CA trust and a correct TLS clock.
-Persistent mode reuses its existing compatible binary.
+24 MiB and 1 MiB reserve (`max_kib=` / `reserve_kib=`). Missing RAM binaries are
+recovered from the accepted URL with bounded exponential backoff. RAM mode needs
+working networking, CA trust and a correct TLS clock.
 
-`wtctl status` reports supervisor/binary phase, child PID, exit, restart count
-and retry epoch, plus each tunnel's applied server, direction/protocol and
-endpoints. `wtctl tunnel list` shows the same details from saved configuration:
-
-```text
-printer server=office reverse/tcp listen=127.0.0.1:9100 target=192.168.1.50:9100
-```
-
-`listen=` includes bind address and listen port; `target=` includes target host
-and port. IPv6 addresses are bracketed, e.g. `listen=[::1]:9100`. The listener
-is local for forward tunnels and on the server for reverse tunnels. These are
-configuration settings, not verified sockets or resolved IP addresses.
-No tunnel logs or traffic-health claims. `daemon` and
-`shutdown` remain service plumbing, not tunnel controls. Stop the owning service
-(`/etc/init.d/wtctl stop` or `systemctl stop wtctl`) for maintenance; an active
-init watchdog can undo a direct shutdown.
+`wtctl status` reports supervisor and binary phase, child PID, exit, restart
+count and retry time, plus each tunnel's `listen=` and `target=` endpoints. These
+are configured values, not verified sockets or traffic health.
 
 ## Uninstall
 
-Remove the adapter used by setup, then uninstall as root:
-
 ```sh
-wtctl startup remove openwrt --yes  # or systemd/sysv
-wtctl uninstall --yes              # preserves configuration/persistent binary
-# Instead, for irreversible deletion of manager configuration and credentials:
-# wtctl uninstall --purge --yes
+wtctl uninstall --yes          # removes boot integration; keeps /etc/wtctl
+wtctl uninstall --purge --yes  # also deletes configuration and credentials
 ```
 
-Packages, networking, firewall settings and release directories are untouched.
-This fresh-install schema intentionally has no 0.1.0 migration.
+Startup files not created by wtctl are reported and left untouched. Reinstalling
+after an uninstall without `--purge` keeps the configuration and accepted setup.
+Installations from before 0.3.0 that used `server`/`tunnel` commands cannot be
+migrated: uninstall them with `--purge` and reinstall.
 
 ## Development
 
 ```sh
 make check          # syntax, ShellCheck, Python helpers
-make test           # BusyBox lifecycle/download/setup and real PTY regressions
+make test           # BusyBox lifecycle, downloads, control streams, installer
 make integration    # real wstunnel v11, verified TLS, forward/reverse TCP/UDP
-make openwrt-smoke   # OpenWrt userland/adapter registration, not a boot test
+make compose-test   # multi-container acceptance lab with netcat control
+make openwrt-smoke  # OpenWrt userland/adapter registration, not a boot test
 make dist           # portable release in dist/
 ```
 
-Physical 0.1.0 harnesses are version-gated historical tools, not acceptance
-coverage for 0.2.0. See [design](docs/DESIGN.md) and [operations](docs/OPERATIONS.md).
-
-## Configuration streams (in progress)
-
-Complete INI configurations can be submitted locally with `wtctl apply FILE` or
-`cat FILE | wtctl apply -`, and remotely using plain netcat through the control
-tunnel. See [Netcat control](docs/NETCAT-CONTROL.md) for request framing,
-candidate confirmation, installation, and essential firewall restrictions.
-This path is under qualification; do not treat fixture tests as device approval.
-
-Run `make compose-test` for the isolated multi-container acceptance lab using
-the official wstunnel v11.1.0 server image, verified WSS, path-prefix secrets,
-fresh INI installation, and plain netcat control streams. See
-[Compose acceptance](docs/COMPOSE-ACCEPTANCE.md) for topology and manual access.
+The 0.1.0 physical harnesses are version-gated historical tools. See
+[design](docs/DESIGN.md), [operations](docs/OPERATIONS.md) and
+[Compose acceptance](docs/COMPOSE-ACCEPTANCE.md).

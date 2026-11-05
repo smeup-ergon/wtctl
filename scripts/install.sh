@@ -1,51 +1,20 @@
 #!/bin/sh
 # Define the complete installer before executing it: safe to stream into sh.
-# One repeatable setup: install, configure/update binary, register boot, start.
+# First installation only: install the manager, write a sample configuration,
+# register boot startup and start an idle supervisor. No parameters, no prompts.
 install_main() {
 set -eu
 umask 077
-usage() {
-    printf 'Usage: install.sh [--config FILE] [--yes] [--url HTTPS_RAW_BINARY_URL] [--storage ram|persistent] [--startup openwrt|systemd|sysv] [--ref GIT_REF]\n'
-}
-# stdin contains shell source in curl | sh. Wizard input must come from the tty,
-# but only after the entire function above/below has been parsed by the shell.
-if [ ! -t 0 ] && [ -t 1 ] && (: </dev/tty) 2>/dev/null; then
-    exec </dev/tty
-fi
-approved=0
-initial_config=
-adapter=
-storage=
-url=
-ref=main
-explicit_ref=0
-while [ "$#" -gt 0 ]; do
-    case "$1" in
-        --yes) approved=1;;
-        --config|--url|--storage|--startup|--ref)
-            option=$1; shift
-            [ "$#" -gt 0 ] || { usage >&2; exit 1; }
-            case "$option" in
-                --config) initial_config=$1;;
-                --url) url=$1;;
-                --storage) case "$1" in ram|persistent) storage=$1;; *) usage >&2; exit 1;; esac;;
-                --startup) case "$1" in openwrt|systemd|sysv) adapter=$1;; *) usage >&2; exit 1;; esac;;
-                --ref)
-                    case "$1" in ''|*[!A-Za-z0-9._-]*|.|..) usage >&2; exit 1;; esac
-                    ref=$1; explicit_ref=1;;
-            esac;;
-        --help|-h) usage; exit 0;;
-        *) usage >&2; exit 1;;
-    esac
-    shift
-done
-[ "$approved" = 1 ] || { [ -t 0 ] && [ -t 1 ]; } || { printf 'Unattended setup requires --yes.\n' >&2; usage >&2; exit 1; }
-if [ -n "$initial_config" ]; then
-    [ -f "$initial_config" ] && [ ! -L "$initial_config" ] || { printf 'Initial configuration must be a regular file.\n' >&2; exit 1; }
-    [ -z "$url" ] && [ -z "$storage" ] || { printf 'Do not combine --config with --url or --storage.\n' >&2; exit 1; }
-fi
+[ "$#" = 0 ] || { printf 'Usage: install.sh (no parameters)\n' >&2; exit 1; }
 [ "$(id -u)" = 0 ] || { printf 'Run as root.\n' >&2; exit 1; }
 [ -z "${WTCTL_CONFIG_DIR:-}" ] && [ -z "${WTCTL_STATE_DIR:-}" ] || { printf 'Device setup requires default config/state paths.\n' >&2; exit 1; }
+MANAGER_URL=https://raw.githubusercontent.com/smeup-ergon/wtctl/main/wtctl
+TARGET=/usr/sbin/wtctl
+CONFIG=/etc/wtctl/wtctl.ini
+if [ -e "$TARGET" ] || [ -L "$TARGET" ]; then
+    printf 'wtctl is already installed. Update it by changing url= in %s and running: wtctl apply %s\n' "$CONFIG" "$CONFIG" >&2
+    exit 1
+fi
 ROOT=
 # $0 is sh (not a script path) for a streamed installer. Never resolve it
 # relative to the caller's directory, or accidentally install a local wtctl.
@@ -53,100 +22,89 @@ case "$0" in
     sh|*/sh|-sh) ;;
     *) ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd);;
 esac
-TARGET=/usr/sbin/wtctl
-[ ! -L /usr ] && [ ! -L /usr/sbin ] && [ ! -L "$TARGET" ] || { printf 'Refusing a symlink installation path.\n' >&2; exit 1; }
-if [ -e "$TARGET" ]; then
-    grep -q '^# wtctl: root-operated, POSIX-shell wstunnel client manager for Linux.$' "$TARGET" || { printf 'Refusing to overwrite an unrelated executable.\n' >&2; exit 1; }
+# Resolve boot requirements before changing anything.
+if [ -f /etc/openwrt_release ] && [ -f /etc/rc.common ]; then adapter=openwrt
+elif [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then adapter=systemd
+elif command -v update-rc.d >/dev/null 2>&1; then adapter=sysv
+else
+    printf 'No supported init system found: OpenWrt (procd), systemd, or SysV with update-rc.d is required.\n' >&2
+    exit 1
 fi
+[ ! -L /usr ] && [ ! -L /usr/sbin ] || { printf 'Refusing a symlink installation path.\n' >&2; exit 1; }
 mkdir -p /usr/sbin
 TEMP=$TARGET.new.$$
-ADAPTER_FILE=$TARGET.adapter.$$
-trap 'rm -f "$TEMP" "$ADAPTER_FILE"' EXIT
+trap 'rm -f "$TEMP"' EXIT
 trap 'exit 130' INT TERM HUP
-if [ "$explicit_ref" = 0 ] && [ -n "$ROOT" ] && [ -f "$ROOT/wtctl" ]; then
+if [ -n "$ROOT" ] && [ -f "$ROOT/wtctl" ]; then
     cp "$ROOT/wtctl" "$TEMP"
 else
     command -v curl >/dev/null 2>&1 || { printf 'Bootstrap requires curl with HTTPS and CA trust.\n' >&2; exit 1; }
-    printf 'Fetching wtctl from smeup-ergon/wtctl (%s).\n' "$ref"
+    printf 'Fetching %s\n' "$MANAGER_URL"
     curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
         --connect-timeout 20 --max-time 60 --max-filesize 262144 \
-        --output "$TEMP" "https://raw.githubusercontent.com/smeup-ergon/wtctl/$ref/wtctl"
+        --output "$TEMP" "$MANAGER_URL"
 fi
-# Check the manager before invoking candidate code or replacing an installation.
+# Check the manager before invoking candidate code.
 if ! grep -q '^# wtctl: root-operated, POSIX-shell wstunnel client manager for Linux.$' "$TEMP" || ! sh -n "$TEMP"; then
     printf 'Invalid downloaded manager script.\n' >&2; exit 1
 fi
 chmod 755 "$TEMP"
-if [ "$approved" != 1 ]; then
-    "$TEMP" _approve || { printf 'Setup cancelled.\n'; exit 1; }
-fi
-# Resolve boot requirements before changing an installation.
-if [ -z "$adapter" ]; then
-    if [ -f /etc/openwrt_release ] && [ -f /etc/rc.common ]; then adapter=openwrt
-    elif [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then adapter=systemd
-    elif command -v update-rc.d >/dev/null 2>&1; then adapter=sysv
-    elif [ -t 0 ] && [ -t 1 ]; then
-        (set -C; : > "$ADAPTER_FILE")
-        "$TEMP" _adapter "$ADAPTER_FILE"
-        adapter=$(head -n 1 "$ADAPTER_FILE")
-    else
-        printf 'Cannot detect boot adapter; supply --startup openwrt|systemd|sysv.\n' >&2; exit 1
-    fi
-fi
-case "$adapter" in
-    openwrt) [ -f /etc/openwrt_release ] && [ -f /etc/rc.common ] || { printf 'OpenWrt rc.common is required.\n' >&2; exit 1; };;
-    systemd) command -v systemctl >/dev/null 2>&1 || { printf 'systemctl is required.\n' >&2; exit 1; };;
-    sysv) command -v update-rc.d >/dev/null 2>&1 || { printf 'SysV automatic boot registration requires update-rc.d.\n' >&2; exit 1; };;
-esac
 "$TEMP" _check-startup "$adapter"
-if [ -n "$initial_config" ]; then
-    "$TEMP" validate "$initial_config"
-    # Register the boot path before activation. apply establishes bootstrap state;
-    # on failure the accepted fallback remains available for service startup.
-    rm -f /tmp/wtctl/install-handoff-complete
-    if [ -f "$TARGET" ]; then
-        # Stop init supervision, not just its child (respawn would race apply).
-        case "$adapter" in
-            systemd) [ ! -f /etc/systemd/system/wtctl.service ] || systemctl stop wtctl;;
-            openwrt|sysv) [ ! -f /etc/init.d/wtctl ] || /etc/init.d/wtctl stop;;
-        esac
-        "$TARGET" shutdown
-        # An existing accepted manager is replaced only by URL-driven activation,
-        # whose coordinator owns its backup/rollback. Do not overwrite it here.
-    else mv "$TEMP" "$TARGET"; fi
-    "$TARGET" startup enable "$adapter" --yes
-    # apply may return PENDING while an independent coordinator is active.
-    # Transfer supervisor ownership to init only once activation finishes;
-    # stopping it mid-candidate would destroy the confirmation path.
-    result=0
-    apply_output=$TARGET.apply.$$
-    "$TARGET" apply "$initial_config" > "$apply_output" || result=$?
-    cat "$apply_output"
-    pending=0; grep -qx 'PENDING confirmation-required' "$apply_output" && pending=1
-    rm -f "$apply_output"
-    handoff() {
-        "$TARGET" _handoff "$adapter"
-    }
-    if [ "$pending" = 1 ]; then
-        (trap '' HUP; handoff) </dev/null >/tmp/wtctl/install-handoff.log 2>&1 &
-    else handoff; fi
-    exit "$result"
-fi
-# Run candidate code first: failed downloads leave the installed manager intact.
-"$TEMP" _setup "$storage" "$url"
-# A candidate supervisor must exit before its executable path disappears.
-# Transfer ownership to the installed executable and the init system.
-"$TEMP" shutdown
 mv "$TEMP" "$TARGET"
-"$TARGET" startup enable "$adapter" --yes
+"$TARGET" _bootstrap "$MANAGER_URL"
+if [ -e "$CONFIG" ]; then
+    printf 'Keeping existing %s\n' "$CONFIG"
+else
+    cat > "$CONFIG.new.$$" <<EOF
+# wtctl desired configuration. Replace every REPLACE-ME value, then run:
+#   wtctl validate $CONFIG && wtctl apply $CONFIG
+# Whole-line comments start with # or ;. Values are literal.
+
+[wtctl]
+format=1
+# Changing either URL requests a software update on the next apply.
+url=$MANAGER_URL
+# Raw wstunnel executable for this device's architecture (HTTPS).
+wstunnel_url=https://REPLACE-ME.invalid/wstunnel
+# ram (re-downloaded after reboot) or persistent (stored in /etc/wtctl/bin).
+storage=ram
+
+[control]
+# Remote configuration through a reverse tunnel; restrict the server-side
+# port with a firewall. Set enabled=false to manage only locally.
+enabled=true
+server=primary
+bind=::
+listen=8099
+
+[server primary]
+endpoint=wss://REPLACE-ME.invalid
+# none, path (with prefix=) or basic (with username= and password=).
+auth=none
+# ca=/etc/wtctl/server-ca.pem
+
+# One section per ordinary tunnel; omitting a tunnel removes it.
+# [tunnel ssh]
+# server=primary
+# direction=reverse
+# protocol=tcp
+# bind=127.0.0.1
+# listen=2222
+# target=localhost
+# port=22
+EOF
+    mv "$CONFIG.new.$$" "$CONFIG"
+    printf 'Wrote sample configuration %s\n' "$CONFIG"
+fi
+"$TARGET" _startup enable "$adapter" --yes
 case "$adapter" in
     openwrt|sysv) /etc/init.d/wtctl start;;
     systemd) systemctl start wtctl;;
 esac
 "$TARGET" _ready
-printf 'Setup complete: %s, %s boot startup, all saved tunnels active.\n' "$TARGET" "$adapter"
-printf 'Use wtctl for the menu, or wtctl status. Rerun setup with --url to update.\n'
+printf 'Installed %s with %s boot startup; the service is running idle.\n' "$TARGET" "$adapter"
+printf 'Next: edit %s, then run: wtctl apply %s\n' "$CONFIG" "$CONFIG"
 }
 
-# Parse exit on the same line before main redirects stdin to the terminal.
+# Parse exit on the same line so a truncated stream cannot run partially.
 install_main "$@"; exit

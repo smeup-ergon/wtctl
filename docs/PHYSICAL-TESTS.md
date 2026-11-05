@@ -1,7 +1,7 @@
 # Physical device tests — 2026-10-09
 
-> Historical 0.1.0 evidence only. The 0.2.0 automatic lifecycle/setup redesign
-> has not been deployed or qualified on this device. Its historical harnesses
+> Historical 0.1.0 evidence only. The 0.2.0 and 0.3.0 lifecycle/setup redesigns
+> have not been deployed or qualified on this device. Its historical harnesses
 > refuse newer versions before device mutations; do not treat these results as
 > acceptance of the current release.
 

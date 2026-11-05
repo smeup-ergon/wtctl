@@ -47,7 +47,7 @@ printf 'ok - failed desired retained; boot uses active\n'
 sed 's@18888/manager@18888/bad@' /test/draft > /test/bad-manager
 if "$W" apply /test/bad-manager; then exit 1; fi
 cmp /test/accepted /test/config/active.ini
-"$W" --version | grep -qx 0.2.0
+"$W" --version | grep -qx 0.3.0
 printf 'ok - invalid manager update preserves installed executable\n'
 sed 's/enabled=false/enabled=true/' /test/draft > /test/enabled
 "$W" apply /test/enabled | grep -qx 'PENDING confirmation-required'
@@ -70,7 +70,7 @@ sed 's/port=22/port=23/' /test/enabled > /test/tunnel-edit
 cat /test/tunnel-edit | "$W" apply - | grep -qx 'OK 0'
 cmp /test/tunnel-edit /test/config/active.ini
 printf 'ok - streamed stdin and ordinary tunnel-only edits\n'
-if "$W" tunnel remove ssh; then exit 1; fi
+if "$W" tunnel remove ssh 2>/dev/null; then exit 1; fi
 cp /test/config/active.ini /test/before-invalid
 printf 'PUT 5\nabc' | nc -w 20 127.0.0.1 "$receiver" | grep -qx 'KO invalid-request'
 cmp /test/before-invalid /test/config/active.ini

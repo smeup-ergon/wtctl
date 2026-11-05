@@ -11,6 +11,10 @@ _Avoid_: Remote configuration, local configuration
 **Active configuration**:
 The last complete desired configuration whose activation succeeded. It remains the working setup when a replacement fails to activate.
 
+**Bootstrap configuration**:
+The active configuration established by installation: no managed tunnels, control disabled, and the installed wtctl source URL accepted. It keeps the service running until the first successful configuration activation.
+_Avoid_: Default configuration, empty setup
+
 **Managed tunnel**:
 An ordinary forwarding tunnel declared in the desired configuration, maintained automatically until it is removed from that configuration.
 

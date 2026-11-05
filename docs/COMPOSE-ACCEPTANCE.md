@@ -112,18 +112,20 @@ docker compose -p wtctl-manual -f tests/compose/compose.yaml \
 ```
 
 The override binds WSS and control listeners only to `127.0.0.1` on your host.
-It does not install a desired configuration automatically. Start with
-`cp tests/compose/device.ini device.ini`, edit it as desired, copy it into the
-device, and run the installer:
+It does not install a desired configuration automatically. Run the
+no-parameter installer, then start with `cp tests/compose/device.ini device.ini`,
+edit it as desired, copy it into the device and apply it:
 
 Validate this example inside the device container: its CA path `/lab/ca.pem`
 exists in the lab, not on your host.
 
 ```sh
 docker compose -p wtctl-manual -f tests/compose/compose.yaml \
-  cp device.ini device:/tmp/device.ini
+  exec -T device sh /work/scripts/install.sh
 docker compose -p wtctl-manual -f tests/compose/compose.yaml \
-  exec -T device sh /work/scripts/install.sh --yes --config /tmp/device.ini --startup sysv
+  cp device.ini device:/etc/wtctl/wtctl.ini
+docker compose -p wtctl-manual -f tests/compose/compose.yaml \
+  exec -T device wtctl apply /etc/wtctl/wtctl.ini
 ```
 
 Set the remote control bind to `0.0.0.0` and listen to `8099`. On PENDING, confirm:
@@ -143,11 +145,10 @@ use a longer input-hold interval than the confirmation example above. Desktop
 netcat variants may provide their own half-close/EOF options; do not assume they
 match BusyBox behavior.
 
-The INI installer hands supervision to the selected init adapter after activation
-finishes. For an enabled-control install it returns PENDING first; handoff waits
-for confirmation or rollback and records diagnostics in
-`/tmp/wtctl/install-handoff.log`. The lab asserts completion separately from
-configuration acceptance.
+The installer starts the idle service through the detected init adapter before
+any configuration is applied, so every apply (including manager replacement,
+which re-executes the supervisor in place) runs against an init-owned
+supervisor. The installer matrix asserts that the supervisor PID survives.
 
 Port `18100` maps a candidate remote listener at `8100` when testing a changed
 control port. This differs from the private device-side receiver port, which is

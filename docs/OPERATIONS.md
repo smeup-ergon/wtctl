@@ -1,90 +1,69 @@
-# Installation and operation (0.2.0)
+# Installation and operation (0.3.0)
 
 ## Deployment
 
 1. Do not flash firmware, replace feeds or remove packages to make room.
-2. Provision curl HTTPS and CA trust explicitly. Run `./wtctl doctor` to inspect
-   the shell/applet baseline and mounted `/proc`; it never installs dependencies.
+2. Provision curl HTTPS and CA trust explicitly. Run `wtctl doctor` (or
+   `sh wtctl doctor` from a release) to inspect the shell/applet baseline,
+   mounted `/proc` and the BusyBox `nc` receiver; it never installs dependencies.
 3. Select a trusted raw executable matching CPU, endianness, ISA and ABI/libc.
    A matching ELF header does not establish complete compatibility.
-4. As root, run the one-command setup (trust/inspect the downloaded code first):
+4. As root, run the installer (trust/inspect the downloaded code first):
 
    ```sh
    curl -fsSL https://raw.githubusercontent.com/smeup-ergon/wtctl/main/scripts/install.sh | sh
    ```
 
-   It fetches the manager, reads confirmation and the numbered storage/URL wizard
-   from `/dev/tty`, enables boot startup and starts the service. No checkout is
-   needed. Main is development code; pin both URLs to a tag/commit with --ref
-   as described in the README for reproducibility. Without a controlling terminal:
-
-   ```sh
-   curl -fsSL https://raw.githubusercontent.com/smeup-ergon/wtctl/main/scripts/install.sh | \
-     sh -s -- --yes --storage ram --url 'https://HOST/RAW_BINARY' --startup openwrt
-   ```
-
-   Alternatively, copy the release through an authenticated channel and run
-   `sh scripts/install.sh --yes`; the same configuration flags are available.
-
-5. Setup downloads/validates, enables boot startup and starts the service. It
-   detects OpenWrt, running systemd or SysV with update-rc.d. Choose an adapter
-   explicitly with --startup if needed. Unsupported automatic boot registration
-   fails; no false claim of autostart. Default paths are required.
-6. Run `wtctl` for server/tunnel management. All choices are keyed; text input
-   is only for values. Every saved tunnel starts now and at boot, without apply
-   or enable commands. Verify real traffic at both ends.
+   Or copy a release through an authenticated channel and run
+   `sh scripts/install.sh`. The installer has no parameters or prompts. It
+   detects OpenWrt, running systemd or SysV with `update-rc.d` and stops before
+   changing anything if none is found. It refuses to run when
+   `/usr/sbin/wtctl` exists.
+5. The installer registers boot startup and starts an idle service: no tunnels
+   and control disabled. It writes `/etc/wtctl/wtctl.ini` with `REPLACE-ME`
+   placeholders unless that file already exists.
+6. Edit the configuration, then `wtctl validate` and `wtctl apply` it. The
+   first apply downloads wstunnel; the installed manager URL is already
+   accepted, so keeping `url=` downloads no manager. Verify real traffic at both
+   ends.
 7. Validate actual reboot, WAN-loss recovery and storage limits on the approved
    device before operational acceptance. Correct TLS clock/CA trust is essential
    for RAM redownload at boot. No automatic firewall/authorization changes occur.
 
 Non-loopback binds expose listeners. For reverse mode this exposure is on the
-remote server; secure that server yourself. The default bind is loopback.
+remote server; secure that server yourself. The default tunnel bind is loopback.
+The control listener is exposed on the server: **firewall it**.
 
-## Updating
+## Changing configuration and updating
 
-Rerun the release's installation script. Omitted URL reuses the current source
-and compatible executable; an explicit --url always downloads a candidate.
-Storage selection preserves the current mode if omitted unattended. Existing
-server/tunnel records remain intact. Candidate validation runs as root.
+Edit `/etc/wtctl/wtctl.ini` (or any file) and run `wtctl apply FILE`, or send a
+`PUT` through the control tunnel ([NETCAT-CONTROL.md](NETCAT-CONTROL.md)). Both
+use the same validation and activation path. Software updates are URL changes:
+set a new `url=` or `wstunnel_url=` (a changed query string counts) and apply.
 
-```sh
-curl -fsSL https://raw.githubusercontent.com/smeup-ergon/wtctl/main/scripts/install.sh | \
-  sh -s -- --yes --url 'https://HOST/NEW_RAW_BINARY'
-```
-
-Downloads leave working clients undisturbed. Activation briefly pauses them and
-keeps a rollback executable until local startup is acknowledged. Failed download
-or validation restores settings without deleting the working executable. Space
-must accommodate both retained executable and bounded candidate plus reserve.
-An interruption by SIGKILL/power loss is not a crash-atomic transaction guarantee.
-Startup registration/service-start errors are reported; inspect doctor/status
-rather than assuming successful setup from partial output.
+Downloads are staged and validated while working clients keep running.
+Activation then replaces software and tunnels as a whole. A failure restores the
+previous software, control settings and tunnels on a best-effort basis while the
+activation process lives. Replacing the manager restarts the supervisor in place,
+keeping its PID so procd/systemd continue to own the service. An interruption by
+SIGKILL or power loss is not a crash-atomic transaction guarantee.
 
 ## Maintenance and troubleshooting
 
-- `wtctl doctor`: platform, utilities, download/secret capabilities and boot
-  registration. Unmanaged paths are not executed; missing query tools or
+- `wtctl doctor`: platform, utilities, download and `nc` receiver capabilities,
+  and boot registration. Unmanaged paths are not executed; missing query tools or
   inaccessible data report unknown. Boot registration is not traffic health.
 - `wtctl status`: supervisor/binary phase, child state/PID, last exit, restart
-  count and retry epoch, plus applied server, direction/protocol and
-  `listen=<bind>:<port> target=<host>:<port>` endpoints (IPv6 bracketed).
-  Counters are per-worker lifetime, not persistent history. Endpoints are
-  configuration, not verified sockets; forward listeners are local and reverse
-  listeners are on the server.
-- `wtctl tunnel list`: the same tunnel details from saved configuration rather
-  than the applied snapshot; no runtime state or credentials.
-- Missing RAM binaries retry while at least one tunnel exists. Downloads use
-  verified HTTPS-only redirects and bounded exponential backoff indefinitely.
-- `download-failed`: check WAN, DNS, source URL, clock, CA trust and space.
+  count and retry epoch, applied server, direction/protocol and
+  `listen=<bind>:<port> target=<host>:<port>` endpoints (IPv6 bracketed), and a
+  separate `Control:` line. Endpoints are configuration, not verified sockets.
+- `/etc/wtctl/desired.ini` is the latest valid submission; `active.ini` is the
+  last fully activated one. Boot uses the active configuration.
+- `KO download-failed`: check WAN, DNS, source URL, clock, CA trust and space.
 - `incompatible-binary`: use a raw native supported-client executable; class and
   machine checks do not prove ISA/ABI compatibility.
 - Process backoff: check listener conflicts, server authorization and endpoint
   connectivity. Client failures retain the configuration and retry.
-- Local worker-start or configuration validation failures roll back the edit.
-  A running worker does not guarantee client socket binding or successful traffic.
-- Editing a shared server automatically restarts all referencing tunnels;
-  other tunnels remain running. In-use servers cannot be deleted.
-- Remove a tunnel to stop it permanently. No disabled records or temporary stops.
 - For global maintenance, stop the owning service (`/etc/init.d/wtctl stop` or
   `systemctl stop wtctl`), then start it again when ready. `wtctl shutdown` alone
   can be undone by an init watchdog. Concurrent shutdown is idempotent.
@@ -92,19 +71,25 @@ rather than assuming successful setup from partial output.
 ## Uninstall
 
 ```sh
-wtctl startup remove openwrt --yes  # use the adapter installed by setup
 wtctl uninstall --yes
 ```
 
-This preserves configuration and persistent binary for reinstall. Instead use
-`wtctl uninstall --purge --yes` only for intentional irreversible deletion of
-manager configuration and credentials. Runtime state/RAM binary and the installed
-manager are removed; packages/network/firewall and release directories are untouched.
+This stops and unregisters the managed boot adapter, stops all tunnels, and
+removes runtime state and `/usr/sbin/wtctl`. Configuration and a persistent
+binary are preserved for reinstall. Use `wtctl uninstall --purge --yes` only for
+intentional irreversible deletion of configuration and credentials. Startup
+files not created by wtctl are reported and left untouched; packages, network,
+firewall and release directories are untouched.
+
+Pre-0.3.0 record-based installations have no migration path, and a 0.3.0
+manager reports them on every command except `shutdown`/`uninstall`. With the
+old manager, run `wtctl startup remove ADAPTER --yes` and
+`wtctl uninstall --purge --yes`, then run the 0.3.0 installer.
 
 ## Physical evidence
 
 [Existing physical reports](PHYSICAL-TESTS.md) describe the earlier 0.1.0 lifecycle.
-The 0.2.0 simplification has not been tested on physical hardware. Historical
-physical harnesses fail closed on a newer version rather than executing obsolete
-disabled/draft/destructive-update scenarios. New device acceptance is still needed;
-container/PTY and traffic checks do not substitute for reboot/power/WAN qualification.
+0.3.0 has not been tested on physical hardware. Historical physical harnesses
+fail closed on a newer version rather than executing obsolete scenarios. New
+device acceptance is still needed; container and traffic checks do not
+substitute for reboot/power/WAN qualification.

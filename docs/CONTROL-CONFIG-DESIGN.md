@@ -1,6 +1,6 @@
 # Configuration-driven management and control tunnel
 
-Status: design confirmed; implementation in progress. This describes a replacement management model, not current implemented behavior except where explicitly noted.
+Status: implemented in 0.3.0; physical qualification outstanding. Interactive and per-record management were removed ([ADR 0003](adr/0003-remove-interactive-and-record-management.md)).
 
 Implementation and operator instructions: [NETCAT-CONTROL.md](NETCAT-CONTROL.md).
 The remote sender is plain netcat, not a dedicated management application.
@@ -126,9 +126,9 @@ Identical draft arrival through the candidate receiver confirms the current atte
 
 ## First installation
 
-Provide a noninteractive installer accepting an initial INI file. Install and enable the service. Establish a minimal bootstrap active configuration with control disabled and no ordinary tunnels, then attempt the submitted desired configuration.
+The installer takes no parameters and asks no questions. It refuses an existing installation and devices without a detectable init system (OpenWrt, systemd, or SysV with `update-rc.d`). It installs the manager, establishes a bootstrap active configuration with control disabled and no ordinary tunnels, records the installed manager URL as accepted, writes a sample `/etc/wtctl/wtctl.ini` unless one exists, registers boot and starts the idle service.
 
-If control is enabled, require identical-draft submission through candidate connectivity before reporting successful activation. On failure or confirmation timeout, stop candidate tunnels, retain bootstrap active state, leave the desired file available, and require explicit local resubmission to retry. An initial configuration disabling control can activate without remote confirmation.
+The sample contains `REPLACE-ME` placeholders, which validation rejects. The first `wtctl apply` is an ordinary activation against the running, init-owned supervisor. If control is enabled, it requires identical-draft submission through candidate connectivity. On failure or confirmation timeout, the bootstrap remains active, the desired file remains available, and explicit resubmission retries. A configuration disabling control activates without remote confirmation. Manager replacement re-executes the supervisor in place, preserving init ownership.
 
 ## Acceptance scenarios
 

@@ -4,11 +4,9 @@
 configuration. Validate without changing the device using `wtctl validate device.ini`.
 The INI schema is described in [CONTROL-CONFIG-DESIGN.md](CONTROL-CONFIG-DESIGN.md).
 
-Install noninteractively with:
-
-```sh
-sh scripts/install.sh --yes --config device.ini --startup openwrt
-```
+Install with `sh scripts/install.sh` (no parameters), then edit and apply the
+sample `/etc/wtctl/wtctl.ini`. The service runs with control disabled until the
+first successful apply.
 
 There is no dedicated remote client. On the device, the supported BusyBox `nc`
 must provide `-lk -s ADDRESS -p PORT -e HANDLER`. The receiver binds to IPv4
@@ -71,7 +69,5 @@ retry. A running independent shell coordinator attempts rollback on failure;
 power-loss/crash-atomic rollback is not promised. A newer different submission
 supersedes an older pending candidate and waits for serialized activation.
 
-The legacy setup/menu and per-record commands remain available for older
-installations; per-record mutations and legacy setup are rejected after the
-first accepted INI activation. Physical-device and real
-forwarded-traffic qualification remain required before production deployment.
+Physical-device and real forwarded-traffic qualification remain required before
+production deployment.

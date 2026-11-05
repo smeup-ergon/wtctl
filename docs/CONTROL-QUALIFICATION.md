@@ -6,14 +6,14 @@ release. Do not interpret parser/fixture coverage as physical-hardware approval.
 ## Automated checks
 
 - `make check`: shell syntax, ShellCheck, INI validation, Python helper tests.
-- `make test`: BusyBox nc baseline, INI activation/protocol tests, and legacy
-  regression fixtures.
+- `make test`: BusyBox nc baseline, INI activation/protocol tests, lifecycle
+  fixtures driven by `wtctl apply`, and the no-parameter installer.
 - `make integration`: also runs pinned wstunnel v11 with verified TLS, all four
   ordinary tunnel modes, candidate confirmation through a real reverse tunnel,
   GET ACTIVE, and the remote control-disable success response.
 - `make compose-test`: isolated containers with the official wstunnel v11.1.0
   server, verified WSS and path-prefix rejection, HTTPS software sources, and a
-  plain BusyBox nc operator. Covers pristine `--config FILE` installation,
+  plain BusyBox nc operator. Covers no-parameter installation followed by apply,
   candidate confirmation and supersession, exact 64 KiB framing, software URL
   changes independently/together, byte-distinct executable replacement/rollback,
   both storage transitions, outages, container restart recovery, and the
@@ -103,8 +103,10 @@ not an exact recreation. Emulation combined with CPU limits did cause genuine
 timeouts. Failure evidence is now retained in `tests/compose/artifacts/` and the
 device keeps a bounded `/tmp/wtctl/events` trail.
 
-Open design limits found: the installer handoff and manager replacement stop the
-supervisor, leaving control unavailable for about 25 s at 0.3 CPU emulated.
+Open design limits found: manager replacement stopped the supervisor, leaving
+control unavailable for about 25 s at 0.3 CPU emulated. Since 0.3.0 the
+supervisor re-executes in place and the installer handoff no longer exists; the
+outage has not been remeasured.
 Activation compile/validation runs about 1,000 shell commands. Both need
 measurement on target hardware.
 

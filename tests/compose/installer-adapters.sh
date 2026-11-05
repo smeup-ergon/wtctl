@@ -6,6 +6,8 @@
 # Requires root, pristine /etc/wtctl, /tmp/wtctl and /usr/sbin/wtctl,
 # /work checkout, live sources:8443/{manager,binary}, curl, Python 3,
 # BusyBox tools, and CURL_CA_BUNDLE=/lab/ca.pem. Never alters /lab/manager.
+# The no-parameter installer detects its adapter; per-adapter detection
+# markers are created here and removed afterwards.
 set -eu
 umask 077
 
@@ -18,7 +20,7 @@ pass() { printf 'ok - %s\n' "$*"; }
 [ "${CURL_CA_BUNDLE:-}" = /lab/ca.pem ] || fail 'CURL_CA_BUNDLE must be /lab/ca.pem'
 for path in /etc/wtctl /tmp/wtctl /usr/sbin/wtctl /etc/init.d/wtctl \
     /etc/systemd/system/wtctl.service /etc/rc.common /etc/openwrt_release \
-    /etc/rc2.d/S99wtctl /etc/rc.d/S99wtctl /etc/rc.d/K15wtctl; do
+    /etc/rc2.d/S99wtctl /etc/rc.d/S99wtctl /etc/rc.d/K15wtctl /run/systemd/system; do
     [ ! -e "$path" ] && [ ! -L "$path" ] || fail "reset device first: $path exists"
 done
 
@@ -45,6 +47,15 @@ clean_install() {
     rm -rf /etc/wtctl /tmp/wtctl
     rm -f /usr/sbin/wtctl "$LAB_MATRIX/systemd.enabled"
 }
+select_adapter() {
+    rm -f /etc/rc.common /etc/openwrt_release; rm -rf /run/systemd
+    case "$1" in
+        openwrt)
+            cp "$LAB_MATRIX/rc.common" /etc/rc.common
+            printf '# Test-only Compose OpenWrt adapter prerequisite\n' > /etc/openwrt_release;;
+        systemd) mkdir -p /run/systemd/system;;
+    esac
+}
 finish() {
     result=$?
     trap - EXIT
@@ -54,7 +65,7 @@ finish() {
         done
     fi
     if clean_install; then
-        rm -f /etc/rc.common /etc/openwrt_release
+        rm -f /etc/rc.common /etc/openwrt_release; rm -rf /run/systemd
         rm -rf "$LAB_MATRIX"
     else
         printf 'Cleanup refused: shutdown/ownership check failed; reset device. Logs: %s\n' "$LAB_MATRIX" >&2
@@ -70,11 +81,15 @@ cat > "$LAB_MATRIX/bin/update-rc.d" <<'SH'
 #!/bin/sh
 set -eu
 printf 'sysv %s\n' "$*" >> "$LAB_MATRIX/registration.log"
-[ "$*" = 'wtctl defaults' ] || exit 1
-ln -sf /etc/init.d/wtctl /etc/rc2.d/S99wtctl
+case "$*" in
+    'wtctl defaults') ln -sf /etc/init.d/wtctl /etc/rc2.d/S99wtctl;;
+    '-f wtctl remove') rm -f /etc/rc2.d/S99wtctl;;
+    *) exit 1;;
+esac
 SH
 
-# TEST-ONLY systemctl shim: registration is simulated; ExecStart runs for real.
+# TEST-ONLY systemctl shim: registration is simulated; ExecStart runs for real
+# and its PID stands in for the systemd-owned service process.
 cat > "$LAB_MATRIX/bin/systemctl" <<'SH'
 #!/bin/sh
 set -eu
@@ -82,6 +97,7 @@ printf 'systemd %s\n' "$*" >> "$LAB_MATRIX/registration.log"
 case "$*" in
     daemon-reload) ;;
     'enable wtctl') : > "$LAB_MATRIX/systemd.enabled";;
+    'disable --now wtctl') rm -f "$LAB_MATRIX/systemd.enabled"; /usr/sbin/wtctl shutdown;;
     'is-enabled wtctl.service')
         [ -f "$LAB_MATRIX/systemd.enabled" ] || exit 1
         printf 'enabled\n';;
@@ -89,7 +105,7 @@ case "$*" in
         command_line=$(sed -n 's/^ExecStart=//p' /etc/systemd/system/wtctl.service)
         [ "$command_line" = '/usr/sbin/wtctl daemon' ] || exit 1
         /usr/sbin/wtctl daemon </dev/null >> "$LAB_MATRIX/systemd-daemon.log" 2>&1 &
-        printf '%s\n' "$!" > "$LAB_MATRIX/systemd.pid";;
+        printf '%s\n' "$!" > "$LAB_MATRIX/init.pid";;
     'stop wtctl') /usr/sbin/wtctl shutdown;;
     *) exit 1;;
 esac
@@ -98,7 +114,7 @@ chmod 755 "$LAB_MATRIX/bin/update-rc.d" "$LAB_MATRIX/bin/systemctl"
 
 # TEST-ONLY rc.common/procd shim. The generated adapter is sourced unchanged;
 # procd's command parameter starts the real foreground daemon in the background.
-cat > /etc/rc.common <<'SH'
+cat > "$LAB_MATRIX/rc.common" <<'SH'
 #!/bin/sh
 # Test-only Compose rc.common shim, NOT OpenWrt/procd boot coverage.
 set -eu
@@ -111,7 +127,7 @@ procd_set_param() {
             shift
             [ "$*" = '/usr/sbin/wtctl daemon' ] || exit 1
             "$@" </dev/null >> "$LAB_MATRIX/openwrt-daemon.log" 2>&1 &
-            printf '%s\n' "$!" > "$LAB_MATRIX/openwrt.pid";;
+            printf '%s\n' "$!" > "$LAB_MATRIX/init.pid";;
         respawn|term_timeout|stdout|stderr) :;;
         *) exit 1;;
     esac
@@ -124,12 +140,12 @@ case "$action" in
     enable)
         ln -sf /etc/init.d/wtctl "/etc/rc.d/S${START}wtctl"
         ln -sf /etc/init.d/wtctl "/etc/rc.d/K${STOP}wtctl";;
+    disable) rm -f "/etc/rc.d/S${START}wtctl" "/etc/rc.d/K${STOP}wtctl";;
     start) start_service;;
     stop) /usr/sbin/wtctl shutdown;;
     *) exit 1;;
 esac
 SH
-printf '# Test-only Compose OpenWrt adapter prerequisite\n' > /etc/openwrt_release
 
 cat > "$LAB_MATRIX/valid.ini" <<'INI'
 [wtctl]
@@ -147,10 +163,12 @@ prefix=test-secret-prefix
 ca=/lab/ca.pem
 INI
 
-install_config() {
-    sh /work/scripts/install.sh --yes --config "$1" --startup "$2" \
-        > "$LAB_MATRIX/install.log" 2>&1
+install_plain() { sh /work/scripts/install.sh > "$LAB_MATRIX/install.log" 2>&1; }
+apply_config() {
+    cp "$1" /etc/wtctl/wtctl.ini
+    /usr/sbin/wtctl apply /etc/wtctl/wtctl.ini > "$LAB_MATRIX/apply.log" 2>&1
 }
+daemon_pid() { sed -n 's/^pid=//p' /tmp/wtctl/daemon; }
 wait_running() {
     count=0
     while :; do
@@ -167,7 +185,7 @@ assert_stopped() {
     grep -q '^Supervisor: stopped$' "$LAB_MATRIX/status.log" || fail 'adapter stop left supervisor running'
 }
 assert_accepted() {
-    cmp "${1:-$LAB_MATRIX/valid.ini}" /etc/wtctl/desired.ini
+    cmp "$LAB_MATRIX/valid.ini" /etc/wtctl/desired.ini
     cmp "$LAB_MATRIX/valid.ini" /etc/wtctl/active.ini
     cmp /etc/wtctl/current /etc/wtctl/accepted-current
     python3 - <<'PY'
@@ -184,42 +202,41 @@ assert not Path('/tmp/wtctl/tunnels/__control').exists(), 'disabled control was 
 PY
 }
 
-# Validation must precede manager installation AND boot registration.
-sed 's/format=1/format=99/' "$LAB_MATRIX/valid.ini" > "$LAB_MATRIX/invalid.ini"
-: > "$LAB_MATRIX/registration.log"
-if install_config "$LAB_MATRIX/invalid.ini" sysv; then fail 'invalid INI accepted'; fi
-[ ! -e /usr/sbin/wtctl ] || fail 'invalid INI installed manager'
-[ ! -e /etc/wtctl/desired.ini ] || fail 'invalid INI persisted desired'
-[ ! -e /etc/init.d/wtctl ] || fail 'invalid INI installed startup adapter'
-[ ! -s "$LAB_MATRIX/registration.log" ] || fail 'invalid INI registered startup'
-pass 'sysv invalid INI rejected before installation or registration'
+# No detectable init system: refuse before changing anything.
+select_adapter none
+mv "$LAB_MATRIX/bin/update-rc.d" "$LAB_MATRIX/update-rc.d.hidden"
+mv /usr/sbin/update-rc.d /usr/sbin/update-rc.d.hidden
+if install_plain; then refused=0; else refused=1; fi
+mv /usr/sbin/update-rc.d.hidden /usr/sbin/update-rc.d
+mv "$LAB_MATRIX/update-rc.d.hidden" "$LAB_MATRIX/bin/update-rc.d"
+[ "$refused" = 1 ] || fail 'installer accepted a device without init system'
+grep -q 'No supported init system' "$LAB_MATRIX/install.log" || fail 'missing init system not reported'
+[ ! -e /usr/sbin/wtctl ] && [ ! -e /etc/wtctl ] || fail 'refused install changed the device'
+pass 'installer without supported init system changes nothing'
 
 for adapter in sysv openwrt systemd; do
-    expected_desired=$LAB_MATRIX/valid.ini
-    : > "$LAB_MATRIX/registration.log"
-    install_config "$LAB_MATRIX/valid.ini" "$adapter" || fail "$adapter --config install failed"
-    grep -q '^OK 0$' "$LAB_MATRIX/install.log" || fail "$adapter activation not accepted"
-    assert_accepted
+    select_adapter "$adapter"
+    : > "$LAB_MATRIX/registration.log"; rm -f "$LAB_MATRIX/init.pid"
+    install_plain || fail "$adapter install failed"
+    grep -q "with $adapter boot startup" "$LAB_MATRIX/install.log" || fail "$adapter not detected"
     case "$adapter" in
         openwrt) grep -qx 'openwrt start' "$LAB_MATRIX/registration.log" || fail 'installer did not start through OpenWrt adapter';;
         systemd) grep -qx 'systemd start wtctl' "$LAB_MATRIX/registration.log" || fail 'installer did not start through systemd';;
     esac
-    if [ "$adapter" = sysv ]; then
-        # Rerun with a failed draft after a distinguishable accepted manager.
-        # The installer must not preempt URL-driven executable rollback.
-        sed 's/VERSION=0.2.0/VERSION=0.2.0-preserved/' /usr/sbin/wtctl > "$LAB_MATRIX/old-manager"
-        chmod 700 "$LAB_MATRIX/old-manager"
-        cp "$LAB_MATRIX/old-manager" /usr/sbin/wtctl
-        /usr/sbin/wtctl --version | grep -q 'preserved' || fail 'distinguishable manager is not executable'
-        sed 's|wstunnel_url=https://sources:8443/binary|wstunnel_url=https://sources:8443/missing|' \
-            "$LAB_MATRIX/valid.ini" > "$LAB_MATRIX/failed-upgrade.ini"
-        if install_config "$LAB_MATRIX/failed-upgrade.ini" sysv; then fail 'failed reinstall accepted'; fi
-        cmp "$LAB_MATRIX/old-manager" /usr/sbin/wtctl || fail 'installer overwrote accepted manager before activation'
-        cmp "$LAB_MATRIX/valid.ini" /etc/wtctl/active.ini
-        expected_desired=$LAB_MATRIX/failed-upgrade.ini
-        assert_accepted "$expected_desired"
-        pass 'failed INI reinstall preserves distinguishable accepted manager'
-    fi
+    wait_running
+    grep -q REPLACE-ME /etc/wtctl/wtctl.ini || fail 'sample configuration missing'
+    [ ! -e /etc/wtctl/active.ini ] || fail 'installer activated a configuration'
+    if install_plain; then fail 'installer rerun accepted'; fi
+    grep -q 'already installed' "$LAB_MATRIX/install.log" || fail 'rerun refusal not reported'
+    owner=$(daemon_pid)
+    [ ! -f "$LAB_MATRIX/init.pid" ] || [ "$owner" = "$(cat "$LAB_MATRIX/init.pid")" ] || fail 'supervisor is not the init-started process'
+    # The lab manager URL differs from the installed one: apply replaces the
+    # manager while the init-owned supervisor remains the same process.
+    apply_config "$LAB_MATRIX/valid.ini" || fail "$adapter first apply failed"
+    grep -q '^OK 0$' "$LAB_MATRIX/apply.log" || fail "$adapter activation not accepted"
+    assert_accepted
+    grep -q 'supervisor reexec' /tmp/wtctl/events || fail 'manager replacement did not re-exec the supervisor'
+    [ "$(daemon_pid)" = "$owner" ] || fail 'manager replacement escaped init ownership'
     case "$adapter" in
         sysv)
             grep -qx 'sysv wtctl defaults' "$LAB_MATRIX/registration.log"
@@ -246,7 +263,7 @@ for adapter in sysv openwrt systemd; do
             systemctl start wtctl;;
     esac
     wait_running
-    assert_accepted "$expected_desired"
+    assert_accepted
     /usr/sbin/wtctl doctor > "$LAB_MATRIX/doctor.log"
     case "$adapter" in
         sysv) grep -q 'Boot integration: sysv .* registered (start links found)' "$LAB_MATRIX/doctor.log";;
@@ -254,16 +271,22 @@ for adapter in sysv openwrt systemd; do
     esac
     cat "$LAB_MATRIX/registration.log"
     grep 'Boot integration:' "$LAB_MATRIX/doctor.log"
-    pass "$adapter pristine --config install: accepted real ELF, correct generated adapter, real daemon stop/start (init SHIM)"
+    /usr/sbin/wtctl uninstall --purge --yes > "$LAB_MATRIX/uninstall.log"
+    grep -q "Removed $adapter boot integration" "$LAB_MATRIX/uninstall.log" || fail "$adapter uninstall kept boot integration"
+    for path in /etc/init.d/wtctl /etc/systemd/system/wtctl.service /etc/rc2.d/S99wtctl /etc/rc.d/S99wtctl /usr/sbin/wtctl /etc/wtctl; do
+        [ ! -e "$path" ] && [ ! -L "$path" ] || fail "$adapter uninstall left $path"
+    done
+    pass "$adapter install: idle init-owned service; manager-replacing apply keeps init ownership; uninstall removes boot (init SHIM)"
     clean_install || fail "$adapter shutdown/cleanup failed"
 done
 
-# First-install download failure retains a runnable bootstrap and failed desired.
+# First-apply download failure retains a runnable bootstrap and failed desired.
+select_adapter sysv
 sed 's|wstunnel_url=https://sources:8443/binary|wstunnel_url=https://sources:8443/missing|' \
     "$LAB_MATRIX/valid.ini" > "$LAB_MATRIX/unavailable.ini"
-if install_config "$LAB_MATRIX/unavailable.ini" sysv; then fail 'missing binary accepted'; fi
-grep -q '^KO download-failed$' "$LAB_MATRIX/install.log"
-[ -x /usr/sbin/wtctl ] || fail 'download failure lost bootstrap manager'
+install_plain || fail 'sysv install failed'
+if apply_config "$LAB_MATRIX/unavailable.ini"; then fail 'missing binary accepted'; fi
+grep -q '^KO download-failed$' "$LAB_MATRIX/apply.log"
 cmp /work/wtctl /usr/sbin/wtctl
 cmp "$LAB_MATRIX/unavailable.ini" /etc/wtctl/desired.ini
 [ ! -e /etc/wtctl/active.ini ] || fail 'download failure published active INI'
@@ -275,7 +298,6 @@ snapshot = Path(Path('/etc/wtctl/accepted-current').read_text().strip())
 assert snapshot.is_dir(), 'bootstrap snapshot missing'
 assert {p.name for p in snapshot.iterdir()} == {'global'}, 'bootstrap contains tunnels/control'
 PY
-grep -qx 'sysv wtctl defaults' "$LAB_MATRIX/registration.log"
 /etc/init.d/wtctl stop
 assert_stopped
 /etc/init.d/wtctl start
