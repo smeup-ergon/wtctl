@@ -64,7 +64,7 @@ bytes. STATUS payload is one newline-terminated line: `idle`, `applying`,
 `awaiting-confirmation`, or `failed REASON`. Successful activation returns
 `OK 0\n`. Failure returns `KO REASON\n`. Reasons currently include
 `invalid-request`, `invalid-configuration`, `unavailable`, `control-unavailable`,
-`download-failed`, `manager-download-failed`, `activation-failed`,
+`download-failed`, `manager-download-failed`, `insufficient-space`, `activation-failed`,
 `confirmation-timeout`, `superseded`, and `activation-process-lost`.
 
 When PUT or local apply returns `PENDING confirmation-required`, connect to the

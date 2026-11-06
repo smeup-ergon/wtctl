@@ -93,7 +93,9 @@ old manager, run `wtctl startup remove ADAPTER --yes` and
 ## Physical evidence
 
 [Existing physical reports](PHYSICAL-TESTS.md) describe the earlier 0.1.0 lifecycle.
-0.3.0 has not been tested on physical hardware. Historical physical harnesses
+0.3.0 was exercised on a GL-AR300M on 2026-11-06, including one software
+reboot ([results](CONTROL-QUALIFICATION.md#2026-11-06-physical-gl-ar300m));
+power-cycle, WAN loss and load remain untested. Historical physical harnesses
 fail closed on a newer version rather than executing obsolete scenarios. New
 device acceptance is still needed; container and traffic checks do not
 substitute for reboot/power/WAN qualification.

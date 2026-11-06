@@ -55,7 +55,8 @@ private_dir() {
         [ -d "$1" ] || fail "Not a directory: $1"
         [ "$(ls -nd "$1" | awk '{print $3}')" = 0 ] || fail "Directory is not root-owned: $1"
     else mkdir -p "$1" || fail "Cannot create $1"; fi
-    chmod 700 "$1" || fail "Cannot protect $1"
+    # A full JFFS2 overlay rejects even an unchanged mode: only change if needed.
+    [ "$(ls -nd "$1" | awk '{print substr($1,2,9)}')" = rwx------ ] || chmod 700 "$1" || fail "Cannot protect $1"
 }
 prepare() {
     [ "$(id -u)" = 0 ] || fail 'Run as root'
@@ -292,6 +293,24 @@ publish_config() {
     printf '%s\n' "$generation" > "$CONFIG/current.new.$$" && mv "$CONFIG/current.new.$$" "$CONFIG/current" || fail 'Cannot publish applied configuration'
 }
 current() { head -n 1 "$CONFIG/current" 2>/dev/null; }
+# Stage $1 as $2 for a later rename: a hard link on the same filesystem needs no
+# space; otherwise a complete copy. A failed copy never leaves a partial file.
+stage() {
+    rm -f "$2"
+    ln "$1" "$2" 2>/dev/null && return 0
+    cp -p "$1" "$2" 2>/dev/null && return 0
+    rm -f "$2"; return 1
+}
+# Replace a small record atomically so a full filesystem cannot truncate it.
+restore_file() { cp "$1" "$2.new.$$" 2>/dev/null && mv "$2.new.$$" "$2" || { rm -f "$2.new.$$"; return 1; }; }
+restore_dir() {
+    rm -rf "$2.new.$$"
+    cp -R "$1" "$2.new.$$" 2>/dev/null || { rm -rf "$2.new.$$"; return 1; }
+    rm -rf "${2:?}" && mv "$2.new.$$" "$2"
+}
+filesystem() { df -Pk "$1" 2>/dev/null | awk 'END {print $6}'; }
+free_kib() { df -Pk "$1" 2>/dev/null | awk 'END {print $4}'; }
+existing_dir() { d=$1; while [ ! -d "$d" ]; do d=$(dirname "$d"); done; printf '%s\n' "$d"; }
 phase() { printf '%s\n' "$1" > "$STATE/binary-status.new.$$"; mv "$STATE/binary-status.new.$$" "$STATE/binary-status"; }
 binary_path() {
     if [ "$(get "$1" storage)" = persistent ]; then printf '%s\n' "$CONFIG/bin/wstunnel"
@@ -471,6 +490,7 @@ process_requests() {
     for request in "$STATE"/requests/*; do
         [ -f "$request" ] || continue
         rid=${request##*/}; action=$(get "$request" action)
+        request_owner=$(get "$request" owner); request_owner_token=$(get "$request" owner_token)
         rm -f "$request"
         event "supervisor request $rid $action"
         scan_due=0
@@ -478,12 +498,12 @@ process_requests() {
         if [ "$action" = reexec ]; then respond "$rid" ok; reexec_daemon; fi
         case "$action" in
             pause)
-                paused=1
+                paused=1; pause_owner=$request_owner; pause_owner_token=$request_owner_token
                 terminate "$STATE/download-worker"; terminate "$STATE/download-child"
                 [ -z "$download_pid" ] || wait "$download_pid" 2>/dev/null
                 download_pid=; stop_workers; checked_binary=
                 respond "$rid" ok;;
-            sync) paused=0; sync_request=$rid; scan_due=0;;
+            sync) paused=0; pause_owner=; sync_request=$rid; scan_due=0;;
             *) respond "$rid" 'error: invalid request';;
         esac
     done
@@ -568,7 +588,7 @@ daemon() {
     fi
     active=$(current); [ -d "$active" ] || fail 'Missing configuration snapshot'
     download_pid=; checked_binary=; download_due=0; download_delay=30; scan_due=0
-    paused=0; sync_request=
+    paused=0; pause_owner=; pause_owner_token=; sync_request=
     cp "$active/global" "$STATE/active-global"
     while :; do
         process_requests
@@ -582,7 +602,24 @@ daemon() {
                 stop_workers; cp "$active/global" "$STATE/active-global"
             fi
         fi
-        if [ "$paused" = 1 ]; then sleep 1; continue; fi
+        if [ "$paused" = 1 ]; then
+            # A pause belongs to its activation coordinator. If that process is
+            # gone without a sync, resume the accepted snapshot instead of idling.
+            if [ -n "${pause_owner:-}" ] && ! alive "$pause_owner" "$pause_owner_token" &&
+                ! owned_alive "$STATE/config.lock/owner"; then
+                event "supervisor resume orphaned-pause owner=$pause_owner"
+                paused=0; pause_owner=
+                [ ! -f "$CONFIG/accepted-current" ] || restore_file "$CONFIG/accepted-current" "$CONFIG/current" || :
+                lost_job=$(cat "$STATE/latest-job" 2>/dev/null || :)
+                if [ -n "$lost_job" ] && [ ! -f "$lost_job/result" ] && ! owned_alive "$lost_job/coordinator"; then
+                    activation_status 'failed activation-process-lost'
+                    rm -f "$STATE/pending"
+                fi
+                release_finished_jobs
+                continue
+            fi
+            sleep 1; continue
+        fi
         if [ -d "$active/__control" ]; then
             receiver_port=$(get "$active/__control/tunnel" port)
             if ! owned_alive "$STATE/receiver" || [ "$(get "$STATE/receiver" port)" != "$receiver_port" ]; then
@@ -670,7 +707,9 @@ ensure_daemon() {
 }
 send_request() {
     rid=$(date +%s)-$$
-    { put action "$1"; put name "${2:-all}"; } > "$STATE/request.new.$$"
+    # A full filesystem must not publish an empty request.
+    { put action "$1"; put name "${2:-all}"; put owner "$$"; put owner_token "$(token "$$")"; } > "$STATE/request.new.$$" &&
+        [ "$(get "$STATE/request.new.$$" action)" = "$1" ] || { rm -f "$STATE/request.new.$$"; fail 'Cannot write supervisor request'; }
     mv "$STATE/request.new.$$" "$STATE/requests/$rid"
     count=0
     while [ ! -f "$STATE/responses/$rid" ]; do
@@ -1052,8 +1091,11 @@ account_sync() {
 host_key() {
     [ -s "$CONFIG/control_host_key" ] && return 0
     rm -f "$CONFIG/control_host_key.new.$$"
+    # Some dropbearkey builds also write a public-key file; it is not used.
     dropbearkey -t ed25519 -f "$CONFIG/control_host_key.new.$$" >/dev/null 2>&1 &&
-        mv "$CONFIG/control_host_key.new.$$" "$CONFIG/control_host_key"
+        mv "$CONFIG/control_host_key.new.$$" "$CONFIG/control_host_key"; key_result=$?
+    rm -f "$CONFIG/control_host_key.new.$$.pub" "$CONFIG/control_host_key.new.$$"
+    return "$key_result"
 }
 control_receiver() {
     port "$1" || fail 'Invalid receiver port'
@@ -1141,23 +1183,36 @@ submit_ini() (
 activate_rollback() {
     trap - EXIT HUP INT TERM
     event "rollback begin job=${job##*/} failure=${failure:-} changed=${activation_changed:-0}"
+    # Free space before restoring anything: a failure can be caused by a full
+    # filesystem, and partial or unused candidates are never needed again.
+    for software in manager binary; do
+        destination=$(cat "$job/$software-path" 2>/dev/null || :)
+        [ -z "$destination" ] || rm -f "$destination.new.$$"
+        rm -f "$job/$software-new"
+    done
     if [ "${activation_changed:-0}" = 1 ]; then
         if owned_alive "$STATE/daemon"; then (send_request pause) || :; fi
         for record in global control; do
-            if [ -f "$job/old/$record" ]; then cp "$job/old/$record" "$CONFIG/$record"; else rm -f "$CONFIG/$record"; fi
+            if [ -f "$job/old/$record" ]; then restore_file "$job/old/$record" "$CONFIG/$record" || event "rollback cannot restore $record"
+            else rm -f "$CONFIG/$record"; fi
         done
         for record in servers tunnels; do
-            rm -rf "${CONFIG:?}/${record:?}"; cp -R "$job/old/$record" "$CONFIG/$record"
+            restore_dir "$job/old/$record" "$CONFIG/$record" || event "rollback cannot restore $record"
         done
         account_sync || :
         for software in manager binary; do
             destination=$(cat "$job/$software-path" 2>/dev/null || :)
             [ -n "$destination" ] || continue
-            if [ -f "$job/$software-old" ]; then cp "$job/$software-old" "$destination.rollback.$$" && mv "$destination.rollback.$$" "$destination"
+            if [ -f "$job/$software-old" ]; then
+                stage "$job/$software-old" "$destination.rollback.$$" && mv "$destination.rollback.$$" "$destination" ||
+                    { rm -f "$destination.rollback.$$"; event "rollback cannot restore $software"; }
             else rm -f "$destination"; fi
         done
-        if [ -n "$old_current" ]; then printf '%s\n' "$old_current" > "$CONFIG/current.new.$$"; mv "$CONFIG/current.new.$$" "$CONFIG/current"
-        else rm -f "$CONFIG/current"; fi
+        if [ -z "$old_current" ]; then rm -f "$CONFIG/current"
+        elif [ "$(current)" != "$old_current" ]; then
+            { printf '%s\n' "$old_current" > "$CONFIG/current.new.$$" && [ "$(head -n 1 "$CONFIG/current.new.$$")" = "$old_current" ] &&
+                mv "$CONFIG/current.new.$$" "$CONFIG/current"; } || { rm -f "$CONFIG/current.new.$$"; event 'rollback cannot restore current'; }
+        fi
         if [ -z "$old_current" ]; then
             if owned_alive "$STATE/daemon"; then (send_request shutdown) || :; fi
         else
@@ -1169,9 +1224,24 @@ activate_rollback() {
     if [ "$(cat "$STATE/pending" 2>/dev/null)" = "$job" ]; then rm -f "$STATE/pending"; fi
     rm -f "$STATE/previous-control"
     activation_status "failed ${failure:-activation-failed}"
+    release_job "$job"
     job_result "$job" "KO ${failure:-activation-failed}"
     unlock
 }
+# Finished jobs keep their small records for diagnostics, never software copies:
+# each can be a full executable in RAM-backed runtime storage.
+release_job() { rm -f "$1/binary-new" "$1/binary-old" "$1/manager-new" "$1/manager-old"; }
+release_finished_jobs() (
+    set +f
+    for finished in "$STATE"/job.*; do
+        [ -d "$finished" ] || continue
+        # A job is finished once it has a result or its coordinator is gone.
+        if [ -f "$finished/result" ] || { [ -f "$finished/coordinator" ] && ! owned_alive "$finished/coordinator"; }; then
+            release_job "$finished"
+        fi
+    done
+    :
+)
 activate_ini() {
     job=$1; installed=$2
     # Wait outside the normal bounded mutation lock: downloads and confirmation
@@ -1183,6 +1253,7 @@ activate_ini() {
     done
     record_pid "$LOCK/owner" "$$"
     if [ "$(cat "$STATE/latest-job")" != "$job" ]; then job_result "$job" 'KO superseded'; unlock; return 1; fi
+    release_finished_jobs
     activation_changed=0; old_current=$(current); failure=activation-failed
     trap 'activate_rollback' EXIT
     trap 'exit 130' HUP INT TERM
@@ -1220,6 +1291,20 @@ activate_ini() {
         (download "$job/manager-global" "$job/manager-new" manager) || exit 1
     fi
     [ "$(cat "$STATE/latest-job")" = "$job" ] || { failure=superseded; exit 1; }
+    # Staged software is renamed into place from a hard link when it shares the
+    # destination filesystem. Elsewhere (persistent flash, the installed manager)
+    # the old and new copies coexist briefly: check that before disrupting anything.
+    failure=insufficient-space
+    for software in binary manager; do
+        [ -f "$job/$software-new" ] || continue
+        destination=$binary_destination; [ "$software" != manager ] || destination=$installed
+        target_dir=$(existing_dir "$(dirname "$destination")")
+        [ "$(filesystem "$target_dir")" != "$(filesystem "$job")" ] || continue
+        margin=$(get "$compiled/global" reserve_kib); [ "$software" = binary ] || margin=64
+        needed=$(( ($(wc -c < "$job/$software-new")+1023)/1024 + margin ))
+        available=$(free_kib "$target_dir")
+        number "$available" && [ "$available" -ge "$needed" ] || exit 1
+    done
     failure=activation-failed
     if { [ -f "$job/binary-new" ] || [ -f "$job/manager-new" ]; } && owned_alive "$STATE/daemon"; then
         (send_request pause) || exit 1
@@ -1230,13 +1315,12 @@ activate_ini() {
         destination=$binary_destination; [ "$software" != manager ] || destination=$installed
         if [ "$software" = binary ]; then private_dir "$(dirname "$destination")"; else safe_path "$destination"; fi
         printf '%s\n' "$destination" > "$job/$software-path"
-        [ ! -f "$destination" ] || cp -p "$destination" "$job/$software-old" || exit 1
-        cp "$job/$software-new" "$destination.new.$$" && chmod 700 "$destination.new.$$" && mv "$destination.new.$$" "$destination" || exit 1
+        [ ! -f "$destination" ] || stage "$destination" "$job/$software-old" || exit 1
+        stage "$job/$software-new" "$destination.new.$$" && chmod 700 "$destination.new.$$" && mv "$destination.new.$$" "$destination" || exit 1
     done
-    for record in global servers tunnels; do
-        rm -rf "${CONFIG:?}/${record:?}"; cp -R "$compiled/$record" "$CONFIG/$record" || exit 1
-    done
-    cp "$compiled/control" "$CONFIG/control" || exit 1
+    for record in servers tunnels; do restore_dir "$compiled/$record" "$CONFIG/$record" || exit 1; done
+    restore_file "$compiled/global" "$CONFIG/global" || exit 1
+    restore_file "$compiled/control" "$CONFIG/control" || exit 1
     receiver_port=8099
     [ ! -f "$job/old/control" ] || receiver_port=$(get "$job/old/control" receiver)
     [ -n "$receiver_port" ] || receiver_port=8099
@@ -1253,12 +1337,20 @@ activate_ini() {
         failure=control-unavailable; account_add || exit 1; failure=activation-failed
     fi
     disabling_control=0
-    if [ "$(get "$compiled/control" enabled)" = false ] && [ -f "$job/old/control" ] && [ "$(get "$job/old/control" enabled)" = true ]; then
+    # The running snapshot is authoritative for a live receiver, even if an
+    # interrupted rollback could not restore the control record.
+    if [ "$(get "$compiled/control" enabled)" = false ] &&
+        { [ "$(get "$job/old/control" enabled)" = true ] || [ -d "$old_current/__control" ]; }; then
         # Preserve the management path until the submitting handler has written
         # the successful response. Other activation checks run first.
         disabling_control=1
         cp "$CONFIG/control" "$job/disabled-control"
-        cp "$job/old/control" "$CONFIG/control"
+        if [ "$(get "$job/old/control" enabled)" = true ]; then cp "$job/old/control" "$CONFIG/control"
+        else
+            { put enabled true; put server "$(get "$compiled/control" server)"
+              put bind "$(get "$old_current/__control/tunnel" bind)"; put listen "$(get "$old_current/__control/tunnel" listen)"
+              put receiver "$(get "$old_current/__control/tunnel" port)"; } > "$CONFIG/control" || exit 1
+        fi
     fi
     publish_config || exit 1
     # Only manager replacement needs a supervisor restart. Keeping the receiver
@@ -1289,6 +1381,7 @@ activate_ini() {
         (send_request sync) || exit 1
     fi
     activation_status idle
+    release_job "$job"
     job_result "$job" 'OK 0'
     if [ "$disabling_control" = 1 ]; then
         delivered_deadline=$(($(date +%s)+5))
@@ -1297,6 +1390,10 @@ activate_ini() {
         publish_config
         (send_request sync) || :
         account_remove || :
+    else
+        # The account follows the accepted control state even when an earlier
+        # failed rollback left the records inconsistent.
+        account_sync || :
     fi
     cp "$CONFIG/current" "$CONFIG/accepted-current.new.$$" && mv "$CONFIG/accepted-current.new.$$" "$CONFIG/accepted-current" || exit 1
     unlock; LOCK=$saved_lock; unlock

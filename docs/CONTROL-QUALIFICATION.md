@@ -111,18 +111,59 @@ outage has not been remeasured.
 Activation compile/validation runs about 1,000 shell commands. Both need
 measurement on target hardware.
 
+### 2026-11-06: physical GL-AR300M
+
+Device: GL-AR300M, OpenWrt 22.03.4 `r20123-38ccc47687`, ath79/nand, dropbear
+2022.82, 59 MiB `/tmp`, 1.5 MiB overlay. Software: wstunnel 11.0.0 MIPS32r2 musl
+soft-float (12,889,164 bytes). Server: wstunnel v11.1.0 on the workstation LAN,
+verified TLS with a disposable CA, path-prefix restriction; operator OpenSSH
+without keys. Installed from a copied release; no packages, firewall or
+network settings were changed and the device was purged afterwards with
+`/etc/passwd` and `/etc/config/*` identical to the baseline.
+
+Passed on hardware: installer, rerun refusal, sample rejection, procd
+ownership and supervisor respawn; first apply with real download and PENDING
+(31–49 s); old receiver and local apply cannot confirm; real 60 s timeout
+rollback; confirmation over ssh through the reverse tunnel; all four tunnel
+modes (TCP 4 MiB echo, UDP 16 datagrams) after every stage; remote GET/GET
+ACTIVE/STATUS (1.2–1.8 s); framing rejections; tunnel-only edit keeping
+untouched client PIDs; exact 64 KiB PUT (18 s); wrong-prefix candidate rollback;
+client crash respawn; 20 s server outage (control back 7.5 s after restart);
+control-port migration both ways; wstunnel URL updates and unconfirmed-update
+rollback; remote control disable/local re-enable; main SSH refuses the
+blank-password account; software reboot with RAM re-download, control and four
+tunnels back about 118 s after kernel start, using the active rather than a
+failed desired configuration. Resident memory: supervisor 1.4 MiB, receiver
+about 1 MiB, each wstunnel client about 9 MiB.
+
+The first run failed on storage exhaustion (see [VALIDATION.md](VALIDATION.md)).
+After the fixes the hardware regression passed: three unconfirmed first applies
+and a fourth confirmed one, three updates and two rolled-back updates with no
+retained staged copies (`/tmp` free returned to about 45 MiB after each),
+`storage=persistent` refused with `KO insufficient-space` and the overlay
+unchanged, remote disable replying `OK 0` and removing the account, and the
+supervisor resuming 13.5 s after its pausing coordinator was killed. The final
+build (manager SHA256 `57eacc8a…c39c5a1`) also reports that loss as
+`failed activation-process-lost`, releases the lost job's staged download
+(14.4 s to recovery, `/tmp` free unchanged) and accepts a following update.
+
+A same-listener candidate (changed server settings or software with the same
+server port) can drop the submitting session before `PENDING` is written, as
+documented in [CONTROL.md](CONTROL.md); poll STATUS and confirm.
+
 ## Outstanding qualification
 
-- Physical OpenWrt dropbear receiver, resource use, 64 KiB streamed input timing,
-  procd restart behavior, reboot, and WAN outage recovery.
+- Physical power-cycle, WAN outage recovery, sustained load and the
+  historical reverse-UDP intermittency on 0.3.0.
 - Real boot-manager ownership, respawn and boot ordering under actual procd,
   systemd and SysV environments. The Compose adapter doubles execute the real
   daemon but do not qualify those init implementations.
 - Native target ABI and interoperability with different upstream software
   releases. Compose software variants are byte-distinct fixtures based on the
   same real v11.1.0 static executable; they do not test version interoperability.
-- Resource exhaustion and extended concurrent-submission stress. Job directories
-  currently remain in runtime storage for diagnostics; retention is not bounded.
+- Resource exhaustion and extended concurrent-submission stress. Finished job
+  directories keep only small diagnostic records (staged software is released);
+  their count is not bounded.
 - The receiver uses two fixed loopback ports (8099/8100). Local port conflicts
   and dropbear builds other than 2022.82/2024.85/2024.86 need qualification.
 

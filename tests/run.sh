@@ -16,6 +16,9 @@ docker build --platform linux/amd64 -f tests/Dockerfile -t wtctl-tests:local .
 docker run --rm --platform linux/amd64 -v "$ROOT:/work:ro" --entrypoint /bin/sh wtctl-tests:local /work/tests/config-ini.sh
 docker run --rm --platform linux/amd64 -v "$ROOT:/work:ro" --entrypoint /bin/sh wtctl-tests:local /work/tests/control-timeout.sh
 docker run --rm --platform linux/amd64 -v "$ROOT:/work:ro" --entrypoint /bin/sh wtctl-tests:local /work/tests/control-config.sh
+# Small tmpfs mounts model the device's RAM runtime storage and flash overlay.
+docker run --rm --platform linux/amd64 -v "$ROOT:/work:ro" --tmpfs /test/state:exec,size=12m,mode=700 \
+    --tmpfs /test/config:size=6m,mode=700 --entrypoint /bin/sh wtctl-tests:local /work/tests/storage-limits.sh
 if [ "${1:-}" != --integration ]; then docker run --rm --platform linux/amd64 -v "$ROOT:/work:ro" wtctl-tests:local; fi
 if [ -n "${1:-}" ]; then
     docker build --platform linux/amd64 -f tests/Dockerfile.integration -t wtctl-traffic:local .

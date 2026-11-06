@@ -1,14 +1,14 @@
 VERSION := 0.3.0
 .PHONY: check test integration compose-test reliability-test stress-test openwrt-smoke dist
 check:
-	sh -n tests/config-ini.sh tests/control-config.sh tests/openwrt-control.sh
+	sh -n tests/config-ini.sh tests/control-config.sh tests/openwrt-control.sh tests/storage-limits.sh
 	sh -n tests/control-timeout.sh
 	docker run --rm -v "$(CURDIR):/work:ro" koalaman/shellcheck:stable -s sh /work/tests/control-timeout.sh
 	sh -n tests/compose/run.sh tests/compose/device-entrypoint.sh tests/compose/installer-adapters.sh
 	sh tests/config-ini.sh
 	docker run --rm -v "$(CURDIR):/work:ro" koalaman/shellcheck:stable -s sh /work/tests/compose/run.sh /work/tests/compose/device-entrypoint.sh /work/tests/compose/installer-adapters.sh
 	sh -n wtctl scripts/install.sh tests/run.sh tests/test.sh tests/startup.sh tests/openwrt-smoke.sh tests/build-device-probe.sh tests/shutdown-race.sh
-	docker run --rm -v "$(CURDIR):/work:ro" koalaman/shellcheck:stable -s sh /work/wtctl /work/scripts/install.sh /work/tests/run.sh /work/tests/test.sh /work/tests/startup.sh /work/tests/openwrt-smoke.sh /work/tests/build-device-probe.sh /work/tests/shutdown-race.sh /work/tests/config-ini.sh /work/tests/control-config.sh /work/tests/openwrt-control.sh
+	docker run --rm -v "$(CURDIR):/work:ro" koalaman/shellcheck:stable -s sh /work/wtctl /work/scripts/install.sh /work/tests/run.sh /work/tests/test.sh /work/tests/startup.sh /work/tests/openwrt-smoke.sh /work/tests/build-device-probe.sh /work/tests/shutdown-race.sh /work/tests/config-ini.sh /work/tests/control-config.sh /work/tests/openwrt-control.sh /work/tests/storage-limits.sh
 	PYTHONDONTWRITEBYTECODE=1 python3 tests/device-reboot-helper-test.py
 	PYTHONDONTWRITEBYTECODE=1 python3 tests/device-onsite-helper-test.py
 	python3 -c 'import ast,pathlib; [ast.parse(p.read_text(), filename=str(p)) for p in pathlib.Path("tests").glob("*.py")]'

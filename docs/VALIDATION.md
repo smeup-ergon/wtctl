@@ -1,5 +1,27 @@
 # Validation and release gates
 
+## 0.3.0 physical run and storage fixes (2026-11-06)
+
+GL.iNet GL-AR300M, OpenWrt 22.03.4, dropbear 2022.82, wstunnel 11.0.0
+MIPS32r2 musl soft-float from `smeup-ergon/wstunnel` release
+`v11.0.0-mips32r2.1`, against a workstation wstunnel v11.1.0 server with
+verified TLS and path-prefix restriction. Full results:
+[CONTROL-QUALIFICATION.md](CONTROL-QUALIFICATION.md#2026-11-06-physical-gl-ar300m).
+
+The first run found four storage defects; all were fixed and covered by
+`tests/storage-limits.sh` (small tmpfs mounts for runtime and configuration
+storage), which fails against the previous manager:
+
+- finished activations kept full staged software copies in `/tmp/wtctl/job.*`;
+- replacement copied the staged binary again instead of renaming a hard link;
+- `storage=persistent` checked free space only where the download was staged,
+  so a partial binary filled the flash overlay (`KO insufficient-space` now
+  refuses it before any change);
+- rollback after ENOSPC could truncate records, publish empty supervisor
+  requests and leave the supervisor paused; a pause is now released when its
+  coordinator is gone, records are replaced atomically, and remote control
+  disabling uses the running snapshot when the control record is missing.
+
 ## 0.3.0 dropbear control receiver
 
 Stock OpenWrt 22.03.4 BusyBox `nc` has no listen mode, so the control receiver is

@@ -6,8 +6,9 @@ tunnels and an optional remote control tunnel. It is applied locally with
 `wtctl apply` or remotely with plain `ssh`. No LuCI, UCI, rpcd, Bash, Python,
 jq or dialog is required at runtime.
 
-**0.3.0 is a development release.** INI management has not been qualified on
-physical hardware. Earlier GL-AR300M evidence describes 0.1.0, not this release.
+**0.3.0 is a development release.** One GL-AR300M run (install, remote control,
+updates, rollback, reboot) passed after storage fixes; power-cycle, WAN loss and
+load are not yet qualified for this release.
 See [validation](docs/VALIDATION.md) and [historical physical evidence](docs/PHYSICAL-TESTS.md).
 
 ## Install
@@ -143,7 +144,10 @@ bounded client-help check. They do **not** prove authenticity, complete ABI/ISA
 compatibility or connectivity. Administrator-selected code executes as root.
 
 Downloads require space for the retained old binary plus a candidate of up to
-24 MiB and 1 MiB reserve (`max_kib=` / `reserve_kib=`). Missing RAM binaries are
+24 MiB and 1 MiB reserve (`max_kib=` / `reserve_kib=`). Downloads are staged in
+runtime storage; `storage=persistent` additionally needs the binary size plus the
+reserve free on the `/etc/wtctl` filesystem, or apply returns
+`KO insufficient-space` before changing anything. Missing RAM binaries are
 recovered from the accepted URL with bounded exponential backoff. RAM mode needs
 working networking, CA trust and a correct TLS clock.
 

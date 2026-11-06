@@ -12,6 +12,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if self.path == "/binary" or (self.path == "/flaky" and (root / "wan-up").exists()):
             body = (root / "fixture").read_bytes()
             code = 200
+        elif self.path.startswith("/large") and (root / "large").exists():
+            body, code = (root / "large").read_bytes(), 200
         elif self.path == "/manager":
             body, code = (root / "manager").read_bytes(), 200
         elif self.path == "/bad":
