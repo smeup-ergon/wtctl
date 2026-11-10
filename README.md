@@ -6,9 +6,10 @@ tunnels and an optional remote control tunnel. It is applied locally with
 `wtctl apply` or remotely with plain `ssh`. No LuCI, UCI, rpcd, Bash, Python,
 jq or dialog is required at runtime.
 
-**0.3.0 is a development release.** One GL-AR300M run (install, remote control,
-updates, rollback, reboot) passed after storage fixes; power-cycle, WAN loss and
-load are not yet qualified for this release.
+**0.3.0 is a development release.** On a GL-AR300M, install, remote control,
+updates, rollback, reboot, power-cycle and WAN loss passed. Under sustained
+load that saturates the router's single CPU core, occasional UDP datagrams are
+dropped; this is a device resource limit, not a wtctl fault.
 See [validation](docs/VALIDATION.md) and [historical physical evidence](docs/PHYSICAL-TESTS.md).
 
 ## Install

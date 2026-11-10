@@ -1,5 +1,13 @@
 # Validation and release gates
 
+## 0.3.0 power-cycle, WAN loss and sustained load (2026-11-09/10)
+
+Same GL-AR300M and software, release `07b8ee1`: power-cycle, WAN outage during
+operation and at boot, and idle reverse UDP passed; all local suites passed.
+Sustained load saturated the single core; TCP stayed clean, while occasional
+reverse UDP probe failures are classified as a device resource limit. Details:
+[CONTROL-QUALIFICATION.md](CONTROL-QUALIFICATION.md#2026-11-0910-power-cycle-wan-loss-and-sustained-load-on-gl-ar300m).
+
 ## 0.3.0 physical run and storage fixes (2026-11-06)
 
 GL.iNet GL-AR300M, OpenWrt 22.03.4, dropbear 2022.82, wstunnel 11.0.0

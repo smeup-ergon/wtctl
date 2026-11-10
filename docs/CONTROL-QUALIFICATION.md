@@ -151,10 +151,57 @@ A same-listener candidate (changed server settings or software with the same
 server port) can drop the submitting session before `PENDING` is written, as
 documented in [CONTROL.md](CONTROL.md); poll STATUS and confirm.
 
+### 2026-11-09/10: power-cycle, WAN loss and sustained load on GL-AR300M
+
+Same device and software as above, release `07b8ee1` (manager SHA256
+`57eacc8a…c39c5a1`), installed from a copied release on a purged device.
+Evidence: [2026-11-10-hardware-qualification.json](evidence/2026-11-10-hardware-qualification.json).
+All local suites passed on the same commit: `make check`, 23 fixture groups,
+`make integration`, `make openwrt-smoke`, `make compose-test` (29 groups),
+`make reliability-test` (5 rounds, 20 groups) and `make stress-test`
+(10 rounds, 35 groups).
+
+Passed on hardware (2026-11-10 run; the 2026-11-09 run matched):
+
+- Install and first apply confirmed over ssh in 44 s; all four tunnel modes.
+- 120 s server outage during operation (device-local nft drop) with the RAM
+  wstunnel binary deleted: binary re-downloaded and control back 7.9 s after
+  the outage ended (4.8 s on 2026-11-09); traffic in all four modes.
+- Reverse UDP, the 0.1.0 intermittency: 10 × 500 datagrams, none lost; forward
+  UDP 5/5. No client restarts.
+- Boot with the server unreachable for 180 s: supervisor retried the download,
+  control recovered 53 s after the block lifted, traffic in all four modes.
+- Owner-operated power-cycle (new boot ID, RAM marker gone): procd started
+  the supervisor 91 s after boot, the binary was re-downloaded to RAM, control
+  and all four tunnels ran by 119 s; accepted configuration and receiver
+  account intact.
+
+Sustained load (30 min of a continuous reverse TCP echo stream, repeated 4 MiB
+forward TCP echoes and a 100-datagram reverse UDP probe every minute), three
+runs:
+
+| Run | Reverse TCP | Forward TCP | Reverse UDP probes | CPU avg |
+|---|---|---|---|---|
+| 2026-11-09 | 472 MB, no error | 110 ok, 2 failed | 27 ok, 2 failed | 98.9% |
+| 2026-11-09 retry | 472 MB, no error | 110 ok, 1 failed (ssh login refused) | 29 ok | 98.7% |
+| 2026-11-10, echoes run on device | 482 MB, no error | 117 ok, 0 failed | 29 ok, 1 failed | 99.7% |
+
+These UDP probe failures are classified as a **device resource limit, not a
+wtctl defect**. The single MIPS core was saturated throughout; TCP stayed
+error-free once forward echoes no longer depended on new ssh logins; no client
+restarted, the supervisor logged nothing, there was no OOM and control kept
+serving the accepted configuration; idle reverse UDP lost nothing. UDP is not
+retransmitted, so a saturated relay drops datagrams. This load is above what
+the GL-AR300M sustains; it is not an error budget for faster devices.
+
+The device clock was about 9 h 50 min slow during the run; a certificate valid
+only from the current time was rejected and the first apply rolled back on
+confirmation timeout, as designed. Devices need a correct clock (NTP) or
+certificates whose validity covers the clock skew.
+
 ## Outstanding qualification
 
-- Physical power-cycle, WAN outage recovery, sustained load and the
-  historical reverse-UDP intermittency on 0.3.0.
+- Sustained load on devices with more CPU headroom than the GL-AR300M.
 - Real boot-manager ownership, respawn and boot ordering under actual procd,
   systemd and SysV environments. The Compose adapter doubles execute the real
   daemon but do not qualify those init implementations.

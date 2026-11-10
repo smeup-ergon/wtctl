@@ -94,8 +94,12 @@ old manager, run `wtctl startup remove ADAPTER --yes` and
 
 [Existing physical reports](PHYSICAL-TESTS.md) describe the earlier 0.1.0 lifecycle.
 0.3.0 was exercised on a GL-AR300M on 2026-11-06, including one software
-reboot ([results](CONTROL-QUALIFICATION.md#2026-11-06-physical-gl-ar300m));
-power-cycle, WAN loss and load remain untested. Historical physical harnesses
-fail closed on a newer version rather than executing obsolete scenarios. New
-device acceptance is still needed; container and traffic checks do not
-substitute for reboot/power/WAN qualification.
+reboot ([results](CONTROL-QUALIFICATION.md#2026-11-06-physical-gl-ar300m)), and
+on 2026-11-09/10 with power-cycle, WAN loss during operation and at boot, and
+sustained load ([results](CONTROL-QUALIFICATION.md#2026-11-0910-power-cycle-wan-loss-and-sustained-load-on-gl-ar300m)).
+At full CPU the GL-AR300M drops occasional UDP datagrams; size tunnel load to
+the device. Keep the device clock correct (NTP): a clock behind the server
+certificate's validity start makes TLS, and therefore confirmation, fail.
+Historical physical harnesses fail closed on a newer version rather than
+executing obsolete scenarios; container and traffic checks do not substitute
+for reboot/power/WAN qualification on other devices.

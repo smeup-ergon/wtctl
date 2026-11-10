@@ -1,0 +1,424 @@
+{
+  "release": {
+    "version": "0.3.0",
+    "commit": "07b8ee1",
+    "manager_sha256": "57eacc8aa876fac97992b3147b0e877374c95425c70bea9652f6dbebfb39c5a1"
+  },
+  "device": {
+    "model": "GL.iNet GL-AR300M",
+    "os": "OpenWrt 22.03.4 r20123-38ccc47687",
+    "cpu_cores": 1,
+    "ram_kib": 121184,
+    "ssh_host_key": "SHA256:giHriTurKWWuPML7Zdm99NGNrNXoch2YE9f4ofX1PJk"
+  },
+  "software": {
+    "device_wstunnel": "wstunnel 11.0.0 linux mips32r2 musl soft-float (smeup-ergon/wstunnel v11.0.0-mips32r2.1)",
+    "server": "ghcr.io/erebe/wstunnel:v11.1.0 on the workstation LAN, verified TLS with a disposable CA, path-prefix restriction"
+  },
+  "redaction": "Device credentials, path prefix and private keys are not recorded.",
+  "local_suites": [
+    {
+      "suite": "check",
+      "exit": 0,
+      "seconds": 5
+    },
+    {
+      "suite": "fixture",
+      "exit": 0,
+      "seconds": 558
+    },
+    {
+      "suite": "integration",
+      "exit": 0,
+      "seconds": 276
+    },
+    {
+      "suite": "openwrt-smoke",
+      "exit": 0,
+      "seconds": 11
+    },
+    {
+      "suite": "compose",
+      "exit": 0,
+      "seconds": 617
+    },
+    {
+      "suite": "reliability",
+      "exit": 0,
+      "seconds": 762
+    },
+    {
+      "suite": "stress",
+      "exit": 0,
+      "seconds": 1648
+    }
+  ],
+  "local_suite_totals": {
+    "fixture_groups": 23,
+    "compose_groups": 29,
+    "reliability": "5 rounds, 20 groups",
+    "stress": "10 rounds, 35 groups (0.3 CPU, 40+-30 ms, 1% loss)"
+  },
+  "hardware_run_2026_11_10": [
+    {
+      "time": "2026-11-10T10:19:14Z",
+      "check": "incident: first baseline apply rolled back (confirmation-timeout); device clock ~9h50m slow rejected the fresh lab certificate; certs reissued backdated 2 days; device purged and reinstalled",
+      "passed": null
+    },
+    {
+      "time": "2026-11-10T10:21:27Z",
+      "check": "baseline: install from pinned 07b8ee1 release, first apply confirmed over ssh",
+      "passed": true,
+      "seconds": 44.0,
+      "account": "1"
+    },
+    {
+      "time": "2026-11-10T10:21:51Z",
+      "check": "baseline traffic",
+      "passed": true,
+      "results": {
+        "ft": 4194304,
+        "fu": 16448,
+        "rt": 4194304,
+        "ru": 16448
+      }
+    },
+    {
+      "time": "2026-11-10T10:22:29Z",
+      "check": "outage active: server unreachable, RAM binary removed",
+      "passed": true,
+      "status": "Supervisor: running\nBinary: downloading\nDownload retry epoch: 0\nTUNNEL               STATE        PID      EXIT   RESTARTS NEXT_RETRY DETAILS\nControl: stopped (server=lab reverse/tcp listen=0.0.0.0:8099 target=127.0.0.1:8100)"
+    },
+    {
+      "time": "2026-11-10T10:24:05Z",
+      "check": "control and RAM binary recovered unattended after 120 s server outage",
+      "passed": true,
+      "seconds_after_restore": 7.9,
+      "outage_seconds": 121.0
+    },
+    {
+      "time": "2026-11-10T10:24:33Z",
+      "check": "traffic after outage",
+      "passed": true,
+      "results": {
+        "ft": 4194304,
+        "fu": 16448,
+        "rt": 4194304,
+        "ru": 16448
+      }
+    },
+    {
+      "time": "2026-11-10T10:25:39Z",
+      "check": "reverse UDP: 10 trials x 500 datagrams (1028 B)",
+      "passed": true,
+      "lost_total": 0,
+      "trials": [
+        [
+          1,
+          0,
+          6.243
+        ],
+        [
+          2,
+          0,
+          6.118
+        ],
+        [
+          3,
+          0,
+          6.25
+        ],
+        [
+          4,
+          0,
+          6.225
+        ],
+        [
+          5,
+          0,
+          6.278
+        ],
+        [
+          6,
+          0,
+          6.212
+        ],
+        [
+          7,
+          0,
+          6.572
+        ],
+        [
+          8,
+          0,
+          6.632
+        ],
+        [
+          9,
+          0,
+          6.588
+        ],
+        [
+          10,
+          0,
+          6.496
+        ]
+      ],
+      "lost_ids": []
+    },
+    {
+      "time": "2026-11-10T10:25:43Z",
+      "check": "forward UDP: 5 trials x 16 datagrams via net-probe",
+      "passed": 5
+    },
+    {
+      "time": "2026-11-10T10:25:43Z",
+      "check": "client restarts after UDP trials",
+      "passed": true,
+      "info": {
+        "__control": "0",
+        "ft": "0",
+        "fu": "0",
+        "rt": "0",
+        "ru": "0"
+      }
+    },
+    {
+      "time": "2026-11-10T10:56:41Z",
+      "check": "30-minute sustained load: concurrent forward/reverse TCP plus periodic reverse UDP (forward loop on device)",
+      "passed": false,
+      "reverse_tcp": {
+        "bytes": 481558528,
+        "rounds": 7348,
+        "seconds": 1800.2,
+        "MiB_per_s": 0.255,
+        "error": null
+      },
+      "forward_tcp": {
+        "connections": 117,
+        "failed": 0,
+        "bytes": 490733568
+      },
+      "forward_errors": [],
+      "reverse_udp_probes": {
+        "ok": 29,
+        "lost": 1
+      },
+      "udp_failures": [
+        {
+          "at": "10:27:54",
+          "lost": [
+            "no-output"
+          ]
+        }
+      ],
+      "cpu_percent": {
+        "avg": 99.7,
+        "max": 99.9
+      },
+      "mem_available_kib_min": 50824,
+      "owned_rss_kib_max": 50648,
+      "samples": 57,
+      "sample_misses": 0,
+      "restarts_before": {
+        "__control": "0",
+        "ft": "0",
+        "fu": "0",
+        "rt": "0",
+        "ru": "0"
+      },
+      "restarts_after": {
+        "__control": "0",
+        "ft": "0",
+        "fu": "0",
+        "rt": "0",
+        "ru": "0"
+      }
+    },
+    {
+      "time": "2026-11-10T10:56:43Z",
+      "check": "control still serves accepted configuration after load",
+      "passed": true
+    },
+    {
+      "time": "2026-11-10T10:59:47Z",
+      "check": "rebooted with tunnel server blocked at boot (continuation after script fault)",
+      "passed": true,
+      "uptime_seconds": 109.25,
+      "boot_id": "30a1ea06-fb63-4e07-b8c9-41a38c6b58be",
+      "still_blocked_at_ssh": true,
+      "status": "Supervisor: running\nBinary: downloading\nDownload retry epoch: 0\nTUNNEL               STATE        PID      EXIT   RESTARTS NEXT_RETRY DETAILS\nControl:  (server=lab reverse/tcp listen=0.0.0.0:8099 target=127.0.0.1:8100)\nwstunnel.part"
+    },
+    {
+      "time": "2026-11-10T11:03:01Z",
+      "check": "boot-time outage: RAM binary re-downloaded, control recovered unattended",
+      "passed": true,
+      "outage_seconds": 180,
+      "recovery_after_restore_seconds": 53
+    },
+    {
+      "time": "2026-11-10T11:03:31Z",
+      "check": "traffic after boot-time outage",
+      "passed": true,
+      "results": {
+        "ft": 4194304,
+        "fu": 16448,
+        "rt": 4194304,
+        "ru": 16448
+      },
+      "restarts": {
+        "__control": "0",
+        "ft": "0",
+        "fu": "0",
+        "rt": "0",
+        "ru": "0"
+      }
+    },
+    {
+      "time": "2026-11-10T11:03:32Z",
+      "check": "boot hook removed itself: no init script, no boot link, no nft table",
+      "passed": true
+    },
+    {
+      "time": "2026-11-10T11:03:39Z",
+      "check": "power-cycle prepared: RAM marker written",
+      "passed": true,
+      "boot_id": "30a1ea06-fb63-4e07-b8c9-41a38c6b58be",
+      "uptime_seconds": 342.32
+    },
+    {
+      "time": "2026-11-10T15:48:04Z",
+      "check": "power-cycle observed: new boot id, RAM marker gone",
+      "passed": true,
+      "boot_before": "30a1ea06-fb63-4e07-b8c9-41a38c6b58be",
+      "boot_after": "e01ed26d-91fa-4c8b-a272-4e66d76b9fa0",
+      "uptime_seconds": 739.18,
+      "ssh_wait_seconds": 2.3
+    },
+    {
+      "time": "2026-11-10T15:48:06Z",
+      "check": "power-cycle: procd started wtctl, RAM binary re-downloaded, control serves accepted config",
+      "passed": true,
+      "uptime_at_control_seconds": 741.59
+    },
+    {
+      "time": "2026-11-10T15:48:32Z",
+      "check": "traffic after power-cycle",
+      "passed": true,
+      "results": {
+        "ft": 4194304,
+        "fu": 16448,
+        "rt": 4194304,
+        "ru": 16448
+      },
+      "restarts": {
+        "__control": "0",
+        "ft": "0",
+        "fu": "0",
+        "rt": "0",
+        "ru": "0"
+      }
+    },
+    {
+      "time": "2026-11-10T15:48:33Z",
+      "check": "accepted configuration and receiver account intact after power loss",
+      "passed": true
+    }
+  ],
+  "earlier_sustained_load_runs": [
+    {
+      "run_date": "2026-11-09",
+      "check": "30-minute sustained load: concurrent forward/reverse TCP plus periodic reverse UDP",
+      "passed": false,
+      "reverse_tcp": {
+        "bytes": 472645632,
+        "rounds": 7212,
+        "seconds": 1800.0,
+        "MiB_per_s": 0.25,
+        "error": null
+      },
+      "forward_tcp": {
+        "connections": 110,
+        "failed": 2,
+        "bytes": 461373440
+      },
+      "reverse_udp_probes": {
+        "ok": 27,
+        "lost": 2
+      },
+      "cpu_percent": {
+        "avg": 98.9,
+        "max": 99.5
+      },
+      "mem_available_kib_min": 49748,
+      "owned_rss_kib_max": 50520,
+      "samples": 57,
+      "restarts_after": {
+        "__control": "0",
+        "ft": "0",
+        "fu": "0",
+        "rt": "0",
+        "ru": "0"
+      }
+    },
+    {
+      "run_date": "2026-11-09",
+      "check": "RETRY 30-minute sustained load: concurrent forward/reverse TCP plus periodic reverse UDP",
+      "passed": false,
+      "reverse_tcp": {
+        "bytes": 471990272,
+        "rounds": 7202,
+        "seconds": 1800.2,
+        "MiB_per_s": 0.25,
+        "error": null
+      },
+      "forward_tcp": {
+        "connections": 110,
+        "failed": 1,
+        "bytes": 461373440
+      },
+      "forward_errors": [
+        {
+          "at": "23:28:17",
+          "rc": 255,
+          "stderr": "Permission denied, please try again.\r\nPermission denied, please try again.\r\n"
+        }
+      ],
+      "reverse_udp_probes": {
+        "ok": 29,
+        "lost": 0
+      },
+      "udp_failures": [],
+      "cpu_percent": {
+        "avg": 98.7,
+        "max": 99.5
+      },
+      "mem_available_kib_min": 52908,
+      "owned_rss_kib_max": 50456,
+      "samples": 57,
+      "restarts_after": {
+        "__control": "0",
+        "ft": "0",
+        "fu": "0",
+        "rt": "0",
+        "ru": "0"
+      }
+    }
+  ],
+  "sustained_load_classification": {
+    "result": "device resource limit, not a wtctl defect",
+    "basis": [
+      "single MIPS core at 98.7-99.9% CPU in all three 30-minute runs",
+      "reverse TCP stream error-free in all runs (about 470-480 MB each)",
+      "forward TCP 117/117 when echoes ran on the device; earlier forward failures coincide with SSH logins refused under saturation",
+      "no tunnel client restarts, no supervisor events, no OOM; control kept serving the accepted configuration",
+      "reverse UDP lost nothing with the device idle (10 x 500 datagrams); occasional UDP probe failures only at saturation, which UDP does not retransmit"
+    ],
+    "reverse_udp_probe_failures": "2/29 (2026-11-09 first run), 0/29 (retry), 1/30 (2026-11-10)"
+  },
+  "incidents": [
+    "Device clock was about 9 h 50 min slow; a lab certificate issued at the current time was rejected (first apply rolled back on confirmation-timeout). Certificates were reissued with notBefore two days earlier; the device clock was not changed.",
+    "Boot-outage script asserted on a status read during early boot; the test resumed from that step without a second reboot."
+  ],
+  "cleanup": "wtctl uninstall --purge --yes; test files removed; /etc/passwd and /etc/config/* identical to baseline; lab containers, image, network and volume removed."
+}
